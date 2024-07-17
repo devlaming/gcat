@@ -1,4 +1,5 @@
 import numpy as np
+import time
 
 # define globals
 global MAXITER,TOL,thetainv,thetainv,n,k
@@ -166,8 +167,9 @@ def SimulateData():
 def TryNewton():
     SimulateData()
     param=np.zeros(5*k)
+    t0=time.time()
     (param,paramSE,paramVar,logL,g)=Newton(param)
+    print('Time elapsed in estimation = '+str(time.time()-t0)+' sec')
     return param,paramSE,paramVar,logL,g
 
 (param,paramSE,paramVar,logL,g)=TryNewton()
-
