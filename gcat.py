@@ -2,12 +2,10 @@ import numpy as np
 import time
 
 # define globals
-global MAXITER,TOL,thetainv,thetainv,n,k
+global MAXITER,TOL,thetainv,thetainv
 MAXITER=100
 TOL=1E-12
 thetainv=2/(1+5**0.5)
-n=5*(10**4)
-k=2
 
 def CalcLogL(param,logLonly=False):
     # calculate log-likelihood constant
@@ -130,15 +128,17 @@ def GoldenSection(param1,update):
         i+=1
     return param2
 
-def SimulateData():
+def SimulateDataOneSNP():
     # define globals for data
-    global y1,y2,x
+    global y1,y2,x,n,k
     # set seed and random-number generator
     S=192398123
     rng=np.random.default_rng(S)
     # set constants
     PLOIDY=2
     MAF=0.5
+    n=5*(10**4)
+    k=2
     # set true values
     a1t=np.array((0.5,0.3))
     a2t=np.array((0.3,0.5))
@@ -164,9 +164,9 @@ def SimulateData():
     y1=(x*a1t[None,:]).sum(axis=1)+eps1
     y2=(x*a2t[None,:]).sum(axis=1)+eps2
 
-def TryNewton():
+def TestOneSNP():
     print('Simulating data')
-    SimulateData()
+    SimulateDataOneSNP()
     print('Initialising parameters')
     param=np.zeros(5*k)
     print('Starting estimation')
@@ -176,6 +176,4 @@ def TryNewton():
     paramSE=(np.diag(paramVar))**0.5
     print('Estimation finished')
     print('Time elapsed in estimation = '+str(time.time()-t0)+' sec')
-    return param,paramSE,paramVar,logL,g
-
-(param,paramSE,paramVar,logL,g)=TryNewton()
+    return param,paramSE,paramVar,logL,g,H
