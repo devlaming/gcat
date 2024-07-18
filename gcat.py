@@ -91,8 +91,6 @@ def Newton(param):
         if msg<TOL:
             # set convergence to true and calculate sampling variance
             converged=True
-            paramVar=-np.linalg.inv(H)/n
-            paramSE=(np.diag(paramVar))**0.5
         else:
             # get Newton-Raphson update
             update=-np.linalg.inv(H)@g
@@ -100,7 +98,9 @@ def Newton(param):
             param=GoldenSection(param,update)
             # update iteration counter
             i+=1
-    return param,paramSE,paramVar,logL,g
+            # print update
+            print('Iteration '+str(i)+': logL='+str(logL))
+    return param,logL,g,H
 
 def GoldenSection(param1,update):
     param2=param1+(1-thetainv)*update
@@ -165,10 +165,16 @@ def SimulateData():
     y2=(x*a2t[None,:]).sum(axis=1)+eps2
 
 def TryNewton():
+    print('Simulating data')
     SimulateData()
+    print('Initialising parameters')
     param=np.zeros(5*k)
+    print('Starting estimation')
     t0=time.time()
-    (param,paramSE,paramVar,logL,g)=Newton(param)
+    (param,logL,g,H)=Newton(param)
+    paramVar=-np.linalg.inv(H)/n
+    paramSE=(np.diag(paramVar))**0.5
+    print('Estimation finished')
     print('Time elapsed in estimation = '+str(time.time()-t0)+' sec')
     return param,paramSE,paramVar,logL,g
 
