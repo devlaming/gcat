@@ -11,11 +11,11 @@ def CalcLogL(param,logLonly=False):
     # calculate log-likelihood constant
     cons=2*n*np.log(2*np.pi)
     # get a1, a2, b1, b2, gc from param
-    a1=param[0*k:1*k]
-    a2=param[1*k:2*k]
-    b1=param[2*k:3*k]
-    b2=param[3*k:4*k]
-    gc=param[4*k:5*k]
+    a1=param[:,0]
+    a2=param[:,1]
+    b1=param[:,2]
+    b2=param[:,3]
+    gc=param[:,4]
     # calculate st dev Y1, Y2, delta, rho, and 1-rho^2
     sig1=np.exp((x*b1[None,:]).sum(axis=1))
     sig2=np.exp((x*b2[None,:]).sum(axis=1))
@@ -43,34 +43,32 @@ def CalcLogL(param,logLonly=False):
                                -(((delta**2+1)/(2*delta))\
                                  *r1*r2)))[:,None])).sum(axis=0))/n
         # stack gradients into grand vector
-        g=np.concatenate((ga1,ga2,gb1,gb2,ggc))
-        # get hessian
-        ha1a1=-(x.T@(x*((1/(unexp*(sig1**2)))[:,None])))/n
-        ha2a2=-(x.T@(x*((1/(unexp*(sig2**2)))[:,None])))/n
-        ha1a2=-(x.T@(x*((-rho/(unexp*sig1*sig2))[:,None])))/n
-        ha1b1=-(x.T@(x*(((1/(sig1*unexp))*(rho*r2-2*r1))[:,None])))/n
-        ha1b2=-(x.T@(x*(((1/(sig1*unexp))*(rho*r2))[:,None])))/n
-        ha2b1=-(x.T@(x*(((1/(sig2*unexp))*(rho*r1))[:,None])))/n
-        ha2b2=-(x.T@(x*(((1/(sig2*unexp))*(rho*r1-2*r2))[:,None])))/n
-        ha1gc=-(x.T@(x*(((1/(sig1*unexp))*(rho*r1\
+        g=np.vstack((ga1,ga2,gb1,gb2,ggc)).T
+        # initialise hessian
+        H=np.zeros((k,5,k,5))
+        # get entries hessian
+        H[:,0,:,0]=-(x.T@(x*((1/(unexp*(sig1**2)))[:,None])))/n
+        H[:,1,:,1]=-(x.T@(x*((1/(unexp*(sig2**2)))[:,None])))/n
+        H[:,0,:,1]=-(x.T@(x*((-rho/(unexp*sig1*sig2))[:,None])))/n
+        H[:,0,:,2]=-(x.T@(x*(((1/(sig1*unexp))*(rho*r2-2*r1))[:,None])))/n
+        H[:,1,:,3]=-(x.T@(x*(((1/(sig2*unexp))*(rho*r1-2*r2))[:,None])))/n
+        H[:,0,:,3]=-(x.T@(x*(((1/(sig1*unexp))*(rho*r2))[:,None])))/n
+        H[:,1,:,2]=-(x.T@(x*(((1/(sig2*unexp))*(rho*r1))[:,None])))/n
+        H[:,0,:,4]=-(x.T@(x*(((1/(sig1*unexp))*(rho*r1\
                                            -((1+(rho**2))*(r2/2))))[:,None])))/n
-        ha2gc=-(x.T@(x*(((1/(sig2*unexp))*(rho*r2\
+        H[:,1,:,4]=-(x.T@(x*(((1/(sig2*unexp))*(rho*r2\
                                            -((1+(rho**2))*(r1/2))))[:,None])))/n
-        hb1b1=-(x.T@(x*(((1/unexp)*(2*(r1**2)-rho*r1*r2))[:,None])))/n
-        hb2b2=-(x.T@(x*(((1/unexp)*(2*(r2**2)-rho*r1*r2))[:,None])))/n
-        hb1b2=-(x.T@(x*(((1/unexp)*(-rho*r1*r2))[:,None])))/n
-        hb1gc=-(x.T@(x*(((0.5*r1*r2)-((rho/unexp)*(r1**2)))[:,None])))/n
-        hb2gc=-(x.T@(x*(((0.5*r1*r2)-((rho/unexp)*(r2**2)))[:,None])))/n
-        hgcgc=-(x.T@(x*(((((((delta**2)+1)/(8*delta))*((r1**2)+(r2**2)))\
+        H[:,2,:,2]=-(x.T@(x*(((1/unexp)*(2*(r1**2)-rho*r1*r2))[:,None])))/n
+        H[:,3,:,3]=-(x.T@(x*(((1/unexp)*(2*(r2**2)-rho*r1*r2))[:,None])))/n
+        H[:,2,:,3]=-(x.T@(x*(((1/unexp)*(-rho*r1*r2))[:,None])))/n
+        H[:,2,:,4]=-(x.T@(x*(((0.5*r1*r2)-((rho/unexp)*(r1**2)))[:,None])))/n
+        H[:,3,:,4]=-(x.T@(x*(((0.5*r1*r2)-((rho/unexp)*(r2**2)))[:,None])))/n
+        H[:,4,:,4]=-(x.T@(x*(((((((delta**2)+1)/(8*delta))*((r1**2)+(r2**2)))\
                           -((((delta**2)-1)/(4*delta))*(r1*r2)))\
                          -((1-rho**2)/4))[:,None])))/n
-        # stack hessians into grand matrix
-        H1=np.hstack((ha1a1,ha1a2,ha1b1,ha1b2,ha1gc))
-        H2=np.hstack((ha1a2.T,ha2a2,ha2b1,ha2b2,ha2gc))
-        H3=np.hstack((ha1b1.T,ha2b1.T,hb1b1,hb1b2,hb1gc))
-        H4=np.hstack((ha1b2.T,ha2b2.T,hb1b2.T,hb2b2,hb2gc))
-        H5=np.hstack((ha1gc.T,ha2gc.T,hb1gc.T,hb2gc.T,hgcgc))
-        H=np.vstack((H1,H2,H3,H4,H5))
+        for i in range(4):
+            for j in range(i+1,5):
+                H[:,j,:,i]=H[:,i,:,j]
         return logL,g,H
     else:
         return logL
@@ -91,13 +89,15 @@ def Newton(param):
             converged=True
         else:
             # get Newton-Raphson update
-            update=-np.linalg.inv(H)@g
+            update=-((np.linalg.inv(H.reshape((k*5,k*5)))\
+                      @(g.reshape((k*5,1))))).reshape((k,5))
             # perform golden section to get new parameters estimates
-            param=GoldenSection(param,update)
+            (param,j)=GoldenSection(param,update)
             # update iteration counter
             i+=1
             # print update
-            print('Iteration '+str(i)+': logL='+str(logL))
+            print('Newton iteration '+str(i)+': logL='+str(logL)+'; '+str(j)\
+                  +' line-search steps')
     return param,logL,g,H
 
 def GoldenSection(param1,update):
@@ -126,7 +126,7 @@ def GoldenSection(param1,update):
         if ((param2-param3)**2).mean()<TOL:
             converged=True
         i+=1
-    return param2
+    return param2,i
 
 def SimulateDataOneSNP():
     # define globals for data
@@ -168,12 +168,12 @@ def TestOneSNP():
     print('Simulating data')
     SimulateDataOneSNP()
     print('Initialising parameters')
-    param=np.zeros(5*k)
+    param=np.zeros((k,5))
     print('Starting estimation')
     t0=time.time()
     (param,logL,g,H)=Newton(param)
-    paramVar=-np.linalg.inv(H)/n
-    paramSE=(np.diag(paramVar))**0.5
+    paramVar=-np.linalg.inv(H.reshape((k*5,k*5)))/n
+    paramSE=((np.diag(paramVar))**0.5).reshape((k,5))
     print('Estimation finished')
     print('Time elapsed in estimation = '+str(time.time()-t0)+' sec')
-    return param,paramSE,paramVar,logL,g,H
+    return param,paramSE
