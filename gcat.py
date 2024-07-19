@@ -1,10 +1,10 @@
 import numpy as np
-import time
+import warnings
 from tqdm import tqdm
 
 # define globals
 global MAXITER,TOL,PLOIDY,thetainv,thetainv
-MAXITER=100
+MAXITER=50
 TOL=1E-12
 PLOIDY=2
 thetainv=2/(1+5**0.5)
@@ -78,25 +78,25 @@ def Newton(param,silent=False):
     while not(converged) and i<MAXITER:
         # calculate log-likelihood, its gradient, and Hessian
         (logL,grad,H)=CalcLogL(param)
-        # calculate convergence criterion: mean squared gradient
-        msg=(grad**2).mean()
+        # get Newton-Raphson update vector
+        update=-(np.linalg.inv(H.reshape((ks*5,ks*5)))\
+                 @(grad.reshape((ks*5,1))))
+        # calculate convergence criterion
+        msg=(update*grad.reshape((ks*5,1))).sum()
         # if convergence criterion met
         if msg<TOL:
             # set convergence to true and calculate sampling variance
             converged=True
         else:
-            # get Newton-Raphson update
-            update=-((np.linalg.inv(H.reshape((ks*5,ks*5)))\
-                      @(grad.reshape((ks*5,1))))).reshape((ks,5))
             # perform golden section to get new parameters estimates
-            (param,j)=GoldenSection(param,update)
+            (param,j)=GoldenSection(param,update.reshape((ks,5)))
             # update iteration counter
             i+=1
             # print update if not silent
             if not(silent):
                 print('Newton iteration '+str(i)+': logL='+str(logL)+'; '\
                       +str(j)+' line-search steps')
-    return param,logL,grad,H
+    return param,logL,grad,H,converged
 
 def GoldenSection(param1,update):
     param2=param1+(1-thetainv)*update
@@ -132,23 +132,28 @@ def GCAT():
     print('2. ESTIMATION MODEL WITHOUT SNPS')
     print('Initialising parameters')
     param0=np.zeros((k,5))
-    (param0,logL0,grad0,H0)=Newton(param0)
+    (param0,logL0,grad0,H0,converged0)=Newton(param0)
+    if not(converged0):
+        raise RuntimeError('Estimates baseline model (without SNPs) not converged')
     param0Var=-np.linalg.inv(H0.reshape((k*5,k*5)))/n
     param0SE=((np.diag(param0Var))**0.5).reshape((k,5))
     print('3. ESTIMATION MODELS WITH SNPS')
-    snp=np.zeros((m,5))
-    snpSE=np.zeros((m,5))
-    snpLRT=np.zeros(m)
+    snp=np.empty((m,5))*np.nan
+    snpSE=np.empty((m,5))*np.nan
+    snpLRT=np.empty((m))*np.nan
     for j in tqdm(range(m)):
         param1=np.vstack((param0.copy(),np.zeros((1,5))))
         xs=np.hstack((x,g[:,j][:,None]))
         ks=k+1
-        (param1,logL1,grad1,H1)=Newton(param1,silent=True)
-        param1Var=-np.linalg.inv(H1.reshape(((k+1)*5,(k+1)*5)))/n
-        param1SE=((np.diag(param1Var))**0.5).reshape(((k+1),5))
-        snp[j,:]=param1[-1,:]
-        snpSE[j,:]=param1SE[-1,:]
-        snpLRT[j]=2*n*(logL1-logL0)
+        (param1,logL1,grad1,H1,converged1)=Newton(param1,silent=True)
+        if converged1:
+            param1Var=-np.linalg.inv(H1.reshape(((k+1)*5,(k+1)*5)))/n
+            param1SE=((np.diag(param1Var))**0.5).reshape(((k+1),5))
+            snp[j,:]=param1[-1,:]
+            snpSE[j,:]=param1SE[-1,:]
+            snpLRT[j]=2*n*(logL1-logL0)
+        else:
+            warnings.warn('Model for SNP '+str(j)+' did not converge')
     snpWald=(snp/snpSE)**2
     return param0,param0SE,snp,snpSE,snpWald,snpLRT
 
