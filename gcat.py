@@ -126,12 +126,26 @@ def GoldenSection(param1,update):
         i+=1
     return param2,i
 
+def InitialiseParams():
+    invXTX=np.linalg.inv((x.T@x)/n)
+    a1=invXTX@((x.T@y1)/n)
+    a2=invXTX@((x.T@y2)/n)
+    e1=y1-x@a1
+    e2=y2-x@a2
+    z1=0.5*np.log(e1**2)
+    z2=0.5*np.log(e2**2)
+    b1=invXTX@((x.T@z1)/n)
+    b2=invXTX@((x.T@z2)/n)
+    gc=np.zeros(k)
+    param0=np.vstack((a1,a2,b1,b2,gc)).T
+    return param0
+
 def GCAT():
     # consider globals for xs and ks
     global xs,ks
     print('2. ESTIMATION MODEL WITHOUT SNPS')
     print('Initialising parameters')
-    param0=np.zeros((k,5))
+    param0=InitialiseParams()
     (param0,logL0,grad0,H0,converged0)=Newton(param0)
     if not(converged0):
         raise RuntimeError('Estimates baseline model (without SNPs) not converged')
