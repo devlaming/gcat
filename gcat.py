@@ -3,7 +3,7 @@ import warnings
 from tqdm import tqdm
 
 # define globals
-global MAXITER,TOL,PLOIDY,thetainv,thetainv
+global MAXITER,TOL,PLOIDY,thetainv
 MAXITER=50
 TOL=1E-12
 PLOIDY=2
@@ -33,16 +33,17 @@ def CalcLogL(param,logLonly=False):
     if logLonly:
         return logL
     else:
-        # get gradient of logL per observation 
-        ga1=((xs*((((r1/sig1)-(rho*r2/sig1))/unexp)[:,None])).sum(axis=0))/n
-        ga2=((xs*((((r2/sig2)-(rho*r1/sig2))/unexp)[:,None])).sum(axis=0))/n
-        gb1=((xs*(((((r1**2)-(rho*r1*r2))/unexp)[:,None])-1)).sum(axis=0))/n
-        gb2=((xs*(((((r2**2)-(rho*r1*r2))/unexp)[:,None])-1)).sum(axis=0))/n
-        ggc=((xs*((0.5*rho-0.5*((((delta**2)-1)/(4*delta))*(r1**2+r2**2)\
-                               -(((delta**2+1)/(2*delta))\
-                                 *r1*r2)))[:,None])).sum(axis=0))/n
-        # stack gradients into grand vector
-        grad=np.vstack((ga1,ga2,gb1,gb2,ggc)).T
+        # define gradient per observation as 3d array
+        G=np.zeros((ks,5,n))
+        G[:,0,:]=((xs*((((r1/sig1)-(rho*r2/sig1))/unexp)[:,None]))/n).T
+        G[:,1,:]=((xs*((((r2/sig2)-(rho*r1/sig2))/unexp)[:,None]))/n).T
+        G[:,2,:]=((xs*(((((r1**2)-(rho*r1*r2))/unexp)[:,None])-1))/n).T
+        G[:,3,:]=((xs*(((((r2**2)-(rho*r1*r2))/unexp)[:,None])-1))/n).T
+        G[:,4,:]=((xs*((0.5*rho-0.5*((((delta**2)-1)/(4*delta))*(r1**2+r2**2)\
+                                    -(((delta**2+1)/(2*delta))\
+                                      *r1*r2)))[:,None]))/n).T
+        # calculate gradient by summing gradient per obs along observations
+        grad=G.sum(axis=2)
         # initialise hessian
         H=np.zeros((ks,5,ks,5))
         # get entries hessian
@@ -68,7 +69,7 @@ def CalcLogL(param,logLonly=False):
         for i in range(4):
             for j in range(i+1,5):
                 H[:,j,:,i]=H[:,i,:,j]
-        return logL,grad,H
+        return logL,grad,H,G
 
 def Newton(param,silent=False):
     # set iteration counter to zero and convergence to false
@@ -77,7 +78,7 @@ def Newton(param,silent=False):
     # while not converged and MAXITER not reached
     while not(converged) and i<MAXITER:
         # calculate log-likelihood, its gradient, and Hessian
-        (logL,grad,H)=CalcLogL(param)
+        (logL,grad,H,G)=CalcLogL(param)
         # get Newton-Raphson update vector
         update=-(np.linalg.inv(H.reshape((ks*5,ks*5)))\
                  @(grad.reshape((ks*5,1))))
@@ -96,7 +97,7 @@ def Newton(param,silent=False):
             if not(silent):
                 print('Newton iteration '+str(i)+': logL='+str(logL)+'; '\
                       +str(j)+' line-search steps')
-    return param,logL,grad,H,converged
+    return param,logL,grad,H,G,converged
 
 def GoldenSection(param1,update):
     param2=param1+(1-thetainv)*update
@@ -109,12 +110,14 @@ def GoldenSection(param1,update):
     converged=False
     # while not converged and MAXITER not reached
     while not(converged) and i<MAXITER:
-        if logL2>logL3:
+        #if mid-left val >= mid-right val: set mid-right as right
+        if logL2>=logL3: 
             param4=param3
             param3=param2
             param2=thetainv*param1+(1-thetainv)*param4
             logL3=logL2
             logL2=CalcLogL(param2,logLonly=True)
+        #if mid-right val > mid-left val: set mid-left as left
         else:
             param1=param2
             param2=param3
@@ -146,30 +149,41 @@ def GCAT():
     print('2. ESTIMATION MODEL WITHOUT SNPS')
     print('Initialising parameters')
     param0=InitialiseParams()
-    (param0,logL0,grad0,H0,converged0)=Newton(param0)
+    (param0,logL0,grad0,H0,G0,converged0)=Newton(param0)
     if not(converged0):
         raise RuntimeError('Estimates baseline model (without SNPs) not converged')
-    param0Var=-np.linalg.inv(H0.reshape((k*5,k*5)))/n
+    invH0=np.linalg.inv(H0.reshape((k*5,k*5)))
+    param0Var=-invH0/n
     param0SE=((np.diag(param0Var))**0.5).reshape((k,5))
+    GGT0=(G0.reshape((k*5,n)))@((G0.reshape((k*5,n))).T)
+    param0RobustVar=invH0@GGT0@invH0
+    param0RobustSE=((np.diag(param0RobustVar))**0.5).reshape((k,5))
     print('3. ESTIMATION MODELS WITH SNPS')
     snp=np.empty((m,5))*np.nan
     snpSE=np.empty((m,5))*np.nan
+    snpRobustSE=np.empty((m,5))*np.nan
     snpLRT=np.empty((m))*np.nan
     for j in tqdm(range(m)):
         param1=np.vstack((param0.copy(),np.zeros((1,5))))
         xs=np.hstack((x,g[:,j][:,None]))
         ks=k+1
-        (param1,logL1,grad1,H1,converged1)=Newton(param1,silent=True)
+        (param1,logL1,grad1,H1,G1,converged1)=Newton(param1,silent=True)
         if converged1:
-            param1Var=-np.linalg.inv(H1.reshape(((k+1)*5,(k+1)*5)))/n
+            invH1=np.linalg.inv(H1.reshape(((k+1)*5,(k+1)*5)))
+            param1Var=-invH1/n
             param1SE=((np.diag(param1Var))**0.5).reshape(((k+1),5))
+            GGT1=(G1.reshape(((k+1)*5,n)))@((G1.reshape(((k+1)*5,n))).T)
+            param1RobustVar=invH1@GGT1@invH1
+            param1RobustSE=((np.diag(param1RobustVar))**0.5).reshape((k+1,5))
             snp[j,:]=param1[-1,:]
             snpSE[j,:]=param1SE[-1,:]
+            snpRobustSE[j,:]=param1RobustSE[-1,:]
             snpLRT[j]=2*n*(logL1-logL0)
         else:
             warnings.warn('Model for SNP '+str(j)+' did not converge')
     snpWald=(snp/snpSE)**2
-    return param0,param0SE,snp,snpSE,snpWald,snpLRT
+    snpRobustWald=(snp/snpRobustSE)**2
+    return param0,param0SE,snp,snpSE,snpRobustSE,snpWald,snpRobustWald,snpLRT
 
 def SimulateData():
     # define globals for data and true parameters
@@ -210,7 +224,7 @@ def Test():
     m=10
     MAF=0.5
     SimulateData()
-    (param0,param0SE,snp,snpSE,snpWald,snpLRT)=GCAT()
-    return param0,param0SE,snp,snpSE,snpWald,snpLRT
+    (param0,param0SE,snp,snpSE,snpRobustSE,snpWald,snpRobustWald,snpLRT)=GCAT()
+    return param0,param0SE,snp,snpSE,snpRobustSE,snpWald,snpRobustWald,snpLRT
 
-(param0,param0SE,snp,snpSE,snpWald,snpLRT)=Test()
+(param0,param0SE,snp,snpSE,snpRobustSE,snpWald,snpRobustWald,snpLRT)=Test()
