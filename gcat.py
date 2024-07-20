@@ -3,10 +3,12 @@ import warnings
 from tqdm import tqdm
 
 # define globals
-global MAXITER,TOL,PLOIDY,thetainv
+global MAXITER,TOL,TAUMAF,MINVAR,MINEVALH,thetainv
 MAXITER=50
 TOL=1E-12
-PLOIDY=2
+TAUMAF=0.05
+MINVAR=0.01
+MINEVALMH=1E-6
 thetainv=2/(1+5**0.5)
 
 def CalcLogL(param,logLonly=False):
@@ -79,9 +81,17 @@ def Newton(param,silent=False):
     while not(converged) and i<MAXITER:
         # calculate log-likelihood, its gradient, and Hessian
         (logL,grad,H,G)=CalcLogL(param)
+        # unpack Hessian to matrix
+        UH=H.reshape((ks*5,ks*5))
+        # take average of UH and UH.T for numerical stability
+        UH=(UH+UH.T)/2
+        # get eigenvalue decomposition of minus unpackage Hessian
+        (D,P)=np.linalg.eigh(-UH)
+        if (D<MINEVALMH).sum()>0:
+            print('bended '+str((D<MINEVALMH).sum())+' eigenvalues of Hessian for numerical stability')
+            D[D<MINEVALMH]=MINEVALMH
         # get Newton-Raphson update vector
-        update=-(np.linalg.inv(H.reshape((ks*5,ks*5)))\
-                 @(grad.reshape((ks*5,1))))
+        update=P@((((grad.reshape((ks*5,1))).T@P)/D).T)
         # calculate convergence criterion
         msg=(update*grad.reshape((ks*5,1))).sum()
         # if convergence criterion met
@@ -185,45 +195,89 @@ def GCAT():
     snpRobustWald=(snp/snpRobustSE)**2
     return param0,param0SE,snp,snpSE,snpRobustSE,snpWald,snpRobustWald,snpLRT
 
-def SimulateData():
+def SimulateData(seed,h2y1,h2y2,h2sig1,h2sig2,h2rho):
     # define globals for data and true parameters
-    global y1,y2,x,xs,g,paramtrue
-    # set seed and random-number generator
-    S=192398123
-    rng=np.random.default_rng(S)
-    # draw regressors
-    x=np.hstack((np.ones((n,1)),rng.normal(size=(n,k-1))))
-    xs=x
-    # draw genotypes
-    g=rng.binomial(PLOIDY,MAF,size=(n,m))
-    # set combined matrix
-    X=np.hstack((x,g))
-    # draw true effects
-    paramtrue=rng.normal(scale=0.1,size=(k+m,5))
-    # get SNP-dependent standard deviations and correlations
-    std1=np.exp((X*paramtrue[None,:,2]).sum(axis=1))
-    std2=np.exp((X*paramtrue[None,:,3]).sum(axis=1))
-    delta=np.exp((X*paramtrue[None,:,4]).sum(axis=1))
+    global k,ks,y1,y2,x,xs,g,paramtrue
+    # set random-number generator
+    rng=np.random.default_rng(seed)
+    # draw allele frequencies between (MAFTAU,1-MAFTAU)
+    f=TAUMAF+(1-2*TAUMAF)*rng.uniform(size=m)
+    # initialise genotype matrix and empirical AF
+    g=np.zeros((n,m))
+    eaf=np.zeros(m)
+    # set number of SNPs not done drawing yet to m
+    notdone=(np.ones(m)==1)
+    mnotdone=notdone.sum()
+    # while number of SNPs not done is at least 1
+    while mnotdone>0: 
+        # draw as many biallelic SNPs
+        u=rng.uniform(size=(n,mnotdone))
+        thisg=np.ones((n,mnotdone))
+        thisg[u<(((1-f[notdone])**2)[None,:])]=0
+        thisg[u>((1-(f[notdone]**2))[None,:])]=2
+        g[:,notdone]=thisg
+        # calculate empirical AF
+        eaf[notdone]=thisg.mean(axis=0)/2
+        # find SNPs with insufficient variation
+        notdone=2*(eaf*(1-eaf))<MINVAR
+        mnotdone=notdone.sum()
+    # standardise genotype matrix
+    g=(g-2*(eaf[None,:]))/(((2*eaf*(1-eaf))**0.5)[None,:])
+    # draw effects (prior to scaling)
+    alpha1=rng.normal(size=m)
+    alpha2=rng.normal(size=m)
+    beta1=rng.normal(size=m)
+    beta2=rng.normal(size=m)
+    gamma=rng.normal(size=m)
+    # rescale betas and gammas to yield desired h2, assuming intercept has coefficient 1
+    beta1=(beta1/(((beta1**2).sum())**0.5))*((h2sig1/(1-h2sig1))**0.5)
+    beta2=(beta2/(((beta2**2).sum())**0.5))*((h2sig2/(1-h2sig2))**0.5)
+    gamma=(gamma/(((gamma**2).sum())**0.5))*((h2rho/(1-h2rho))**0.5)
+    # calculate standard deviations and correlations
+    sig1=np.exp(1+((g*beta1[None,:]).sum(axis=1)))
+    sig2=np.exp(1+((g*beta2[None,:]).sum(axis=1)))
+    delta=np.exp(1+((g*gamma[None,:]).sum(axis=1)))
     rho=(delta-1)/(delta+1)
-    # get two nid sources of noise
+    # calculate average variance of both traits
+    vare1=(sig1**2).mean()
+    vare2=(sig2**2).mean()
+    # rescale alphas to yield desired h2
+    alpha1=(alpha1/(((alpha1**2).sum())**0.5))*(((h2y1*vare1)/(1-h2y1))**0.5)
+    alpha2=(alpha2/(((alpha2**2).sum())**0.5))*(((h2y2*vare2)/(1-h2y2))**0.5)
+    # draw noise factors
     eta1=rng.normal(size=n)
     eta2=rng.normal(size=n)
-    # cast to correlated sources in accordance with implied var-covar
-    eps1=eta1*std1
-    eps2=(rho*eta1+((1-(rho**2))**0.5)*eta2)*std2
-    # get outcomes
-    y1=(X*paramtrue[None,:,0]).sum(axis=1)+eps1
-    y2=(X*paramtrue[None,:,1]).sum(axis=1)+eps2
+    # scale and mix noise to achieve desired standard deviations and correlations 
+    e1=sig1*eta1
+    e2=((rho*eta1)+(((1-(rho**2))**0.5)*eta2))*sig2
+    # draw outcomes
+    y1=((g*alpha1[None,:]).sum(axis=1))+e1
+    y2=((g*alpha2[None,:]).sum(axis=1))+e2
+    # set intercept as baseline model regressor
+    x=np.ones((n,1))
+    xs=x.copy()
+    k=1
+    ks=1
+    # store true effects
+    paramtrue=np.ones((m+1,5))
+    paramtrue[1:,0]=alpha1
+    paramtrue[1:,1]=alpha2
+    paramtrue[1:,2]=beta1
+    paramtrue[1:,3]=beta2
+    paramtrue[1:,4]=gamma
 
 def Test():
+    global n,m
     print('1. SIMULATING DATA')
-    global n,k,ks,m,MAF
+    seed=1873798321
     n=int(5e4)
-    k=2
-    ks=k
-    m=10
-    MAF=0.5
-    SimulateData()
+    m=20
+    h2y1=0.5
+    h2y2=0.4
+    h2sig1=0.3
+    h2sig2=0.2
+    h2rho=0.1
+    SimulateData(seed,h2y1,h2y2,h2sig1,h2sig2,h2rho)
     (param0,param0SE,snp,snpSE,snpRobustSE,snpWald,snpRobustWald,snpLRT)=GCAT()
     return param0,param0SE,snp,snpSE,snpRobustSE,snpWald,snpRobustWald,snpLRT
 
