@@ -195,7 +195,7 @@ def GCAT():
     snpRobustWald=(snp/snpRobustSE)**2
     return param0,param0SE,snp,snpSE,snpRobustSE,snpWald,snpRobustWald,snpLRT
 
-def SimulateData(seed,h2y1,h2y2,h2sig1,h2sig2,h2rho):
+def SimulateData(seed,h2y1,h2y2,h2sig1,h2sig2,h2rho,rhog,rhoe,dispersionrhoe):
     # define globals for data and true parameters
     global k,ks,y1,y2,x,xs,g,paramtrue
     # set random-number generator
@@ -223,33 +223,34 @@ def SimulateData(seed,h2y1,h2y2,h2sig1,h2sig2,h2rho):
         mnotdone=notdone.sum()
     # standardise genotype matrix
     g=(g-2*(eaf[None,:]))/(((2*eaf*(1-eaf))**0.5)[None,:])
-    # draw effects (prior to scaling)
-    alpha1=rng.normal(size=m)
-    alpha2=rng.normal(size=m)
-    beta1=rng.normal(size=m)
-    beta2=rng.normal(size=m)
-    gamma=rng.normal(size=m)
-    # rescale betas and gammas to yield desired h2, assuming intercept has coefficient 1
-    beta1=(beta1/(((beta1**2).sum())**0.5))*((h2sig1/(1-h2sig1))**0.5)
-    beta2=(beta2/(((beta2**2).sum())**0.5))*((h2sig2/(1-h2sig2))**0.5)
-    gamma=(gamma/(((gamma**2).sum())**0.5))*((h2rho/(1-h2rho))**0.5)
-    # calculate standard deviations and correlations
-    sig1=np.exp(1+((g*beta1[None,:]).sum(axis=1)))
-    sig2=np.exp(1+((g*beta2[None,:]).sum(axis=1)))
-    delta=np.exp(1+((g*gamma[None,:]).sum(axis=1)))
+    # draw factors for SNP effects on expectations
+    gf1=rng.normal(size=m)
+    gf2=rng.normal(size=m)
+    # draw correlated SNP effects on expectations
+    alpha1=gf1*((h2y1/m)**0.5)
+    alpha2=((rhog*gf1)+(((1-(rhog**2))**0.5)*gf2))*((h2y2/m)**0.5)
+    # draw SNP effects on variances and correlation
+    beta1=rng.normal(size=m)*((h2sig1/m)**0.5)
+    beta2=rng.normal(size=m)*((h2sig2/m)**0.5)
+    gamma=dispersionrhoe*(rng.normal(size=m)*((h2rho/m)**0.5))
+    # draw error terms for sigma and rho
+    esig1=rng.normal(size=n)*((1-h2sig1)**0.5)
+    esig2=rng.normal(size=n)*((1-h2sig2)**0.5)
+    erho=dispersionrhoe*(rng.normal(size=n)*((1-h2rho)**0.5))
+    # calculate standard deviations
+    sig1=np.exp(-1+esig1+((g*beta1[None,:]).sum(axis=1)))
+    sig2=np.exp(-1+esig2+((g*beta2[None,:]).sum(axis=1)))
+    # find intercept for linear part of correlation, such that average
+    # correlation equals rhoe
+    gamma0=np.log((1+rhoe)/(1-rhoe))
+    delta=np.exp(gamma0+erho+((g*gamma[None,:]).sum(axis=1)))
     rho=(delta-1)/(delta+1)
-    # calculate average variance of both traits
-    vare1=(sig1**2).mean()
-    vare2=(sig2**2).mean()
-    # rescale alphas to yield desired h2
-    alpha1=(alpha1/(((alpha1**2).sum())**0.5))*(((h2y1*vare1)/(1-h2y1))**0.5)
-    alpha2=(alpha2/(((alpha2**2).sum())**0.5))*(((h2y2*vare2)/(1-h2y2))**0.5)
     # draw noise factors
     eta1=rng.normal(size=n)
     eta2=rng.normal(size=n)
     # scale and mix noise to achieve desired standard deviations and correlations 
-    e1=sig1*eta1
-    e2=((rho*eta1)+(((1-(rho**2))**0.5)*eta2))*sig2
+    e1=sig1*eta1*((1-h2y1)**0.5)
+    e2=((rho*eta1)+(((1-(rho**2))**0.5)*eta2))*sig2*((1-h2y2)**0.5)
     # draw outcomes
     y1=((g*alpha1[None,:]).sum(axis=1))+e1
     y2=((g*alpha2[None,:]).sum(axis=1))+e2
@@ -271,13 +272,16 @@ def Test():
     print('1. SIMULATING DATA')
     seed=1873798321
     n=int(5e4)
-    m=20
+    m=1000
     h2y1=0.5
     h2y2=0.4
     h2sig1=0.3
     h2sig2=0.2
     h2rho=0.1
-    SimulateData(seed,h2y1,h2y2,h2sig1,h2sig2,h2rho)
+    rhog=0.7
+    rhoe=0.6
+    dispersionrhoe=0.1
+    SimulateData(seed,h2y1,h2y2,h2sig1,h2sig2,h2rho,rhog,rhoe,dispersionrhoe)
     (param0,param0SE,snp,snpSE,snpRobustSE,snpWald,snpRobustWald,snpLRT)=GCAT()
     return param0,param0SE,snp,snpSE,snpRobustSE,snpWald,snpRobustWald,snpLRT
 
