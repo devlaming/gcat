@@ -20,15 +20,24 @@ def CalcLogL(param,logLonly=False):
     sig2=np.exp((xs*param[None,:,3]).sum(axis=1))
     delta=np.exp((xs*param[None,:,4]).sum(axis=1))
     rho=(delta-1)/(delta+1)
-    # if at least one st.dev is zero: just return logL at -np.inf
+    # set halting variable to false
+    halt=False
+    # if at least one st.dev is zero: halt=True
     if (((sig1==0).sum())+((sig2==0).sum()))>0:
-        return -np.inf
-    # if at least one delta is 0 or np.inf: just return logL at -np.inf
+        halt=True
+    # if at least one delta is 0 or np.inf: halt=True
     if (((delta==0).sum())+(np.isinf(delta).sum()))>0:
-        return -np.inf
-    # if at least one rsq is 1: just return logL at -np.inf
+        halt=True
+    # if at least one rsq is 1: halt=True
     if ((rho**2==1).sum())>0:
-        return -np.inf
+        halt=True
+    # if halt=True: set -np.inf as log-likelihood
+    if halt:
+        logL=-np.inf
+        if logLonly:
+            return logL
+        else:
+            return logL,None,None,None
     # update rho to yield correlation of one in case delta is np.inf
     rho[np.isinf(delta)]=1
     # calculate 1-rsq
@@ -94,6 +103,9 @@ def Newton(param,silent=False):
     while not(converged) and i<MAXITER:
         # calculate log-likelihood, its gradient, and Hessian
         (logL,grad,H,G)=CalcLogL(param)
+        # if log-likelihood is -np.inf: quit; on a dead track for this SNP
+        if np.isinf(logL):
+            return param,logL,grad,H,G,converged
         # unpack Hessian to matrix
         UH=H.reshape((ks*5,ks*5))
         # take average of UH and UH.T for numerical stability
@@ -176,7 +188,7 @@ def GCAT():
     param0=InitialiseParams()
     (param0,logL0,grad0,H0,G0,converged0)=Newton(param0)
     if not(converged0):
-        raise RuntimeError('Estimates baseline model (without SNPs) not converged')
+        raise RuntimeError('Estimates baseline model (=no SNPs) not converged')
     invH0=np.linalg.inv(H0.reshape((k*5,k*5)))
     param0Var=-invH0/n
     param0SE=((np.diag(param0Var))**0.5).reshape((k,5))
