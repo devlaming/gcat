@@ -1,6 +1,7 @@
 import numpy as np
 import warnings
 from tqdm import tqdm
+from scipy import stats
 
 # define globals
 global MAXITER,TOL,TAUMAF,MINVAR,MINEVALH,thetainv
@@ -190,37 +191,59 @@ def GCAT():
     if not(converged0):
         raise RuntimeError('Estimates baseline model (=no SNPs) not converged')
     invH0=np.linalg.inv(H0.reshape((k*5,k*5)))
-    param0Var=-invH0/n
-    param0SE=((np.diag(param0Var))**0.5).reshape((k,5))
     GGT0=(G0.reshape((k*5,n)))@((G0.reshape((k*5,n))).T)
-    param0RobustVar=invH0@GGT0@invH0
-    param0RobustSE=((np.diag(param0RobustVar))**0.5).reshape((k,5))
+    param0Var=invH0@GGT0@invH0
+    param0SE=((np.diag(param0Var))**0.5).reshape((k,5))
     print('3. ESTIMATION MODELS WITH SNPS')
     snp=np.empty((m,5))*np.nan
     snpSE=np.empty((m,5))*np.nan
-    snpRobustSE=np.empty((m,5))*np.nan
     snpLRT=np.empty((m))*np.nan
+    snpAPEsig1=np.empty(m)*np.nan
+    snpAPEsig1SE=np.empty(m)*np.nan
+    snpAPEsig2=np.empty(m)*np.nan
+    snpAPEsig2SE=np.empty(m)*np.nan
+    snpAPErho=np.empty(m)*np.nan
+    snpAPErhoSE=np.empty(m)*np.nan
     for j in tqdm(range(m)):
         param1=np.vstack((param0.copy(),np.zeros((1,5))))
         xs=np.hstack((x,g[:,j][:,None]))
         ks=k+1
         (param1,logL1,grad1,H1,G1,converged1)=Newton(param1,silent=True)
         if converged1:
-            invH1=np.linalg.inv(H1.reshape(((k+1)*5,(k+1)*5)))
-            param1Var=-invH1/n
-            param1SE=((np.diag(param1Var))**0.5).reshape(((k+1),5))
-            GGT1=(G1.reshape(((k+1)*5,n)))@((G1.reshape(((k+1)*5,n))).T)
-            param1RobustVar=invH1@GGT1@invH1
-            param1RobustSE=((np.diag(param1RobustVar))**0.5).reshape((k+1,5))
+            invH1=np.linalg.inv(H1.reshape((ks*5,ks*5)))
+            GGT1=(G1.reshape((ks*5,n)))@((G1.reshape((ks*5,n))).T)
+            param1Var=invH1@GGT1@invH1
+            param1SE=((np.diag(param1Var))**0.5).reshape((ks,5))
+            b1Var=(param1Var.reshape((ks,5,ks,5)))[:,2,:,2]
+            b2Var=(param1Var.reshape((ks,5,ks,5)))[:,3,:,3]
+            sig1=np.exp((xs*param1[None,:,2]).sum(axis=1))
+            sig2=np.exp((xs*param1[None,:,3]).sum(axis=1))
+            snpAPEsig1[j]=param1[-1,2]*sig1.mean()
+            snpAPEsig2[j]=param1[-1,3]*sig2.mean()
+            deltaAPEsig1=param1[-1,2]*(xs*sig1[:,None]).mean(axis=0)
+            deltaAPEsig2=param1[-1,3]*(xs*sig2[:,None]).mean(axis=0)
+            deltaAPEsig1[-1]=sig1.mean()+deltaAPEsig1[-1]
+            deltaAPEsig2[-1]=sig2.mean()+deltaAPEsig2[-1]
+            snpAPEsig1SE[j]=(deltaAPEsig1@b1Var@deltaAPEsig1)**0.5
+            snpAPEsig2SE[j]=(deltaAPEsig2@b2Var@deltaAPEsig2)**0.5
+            gcVar=(param1Var.reshape((ks,5,ks,5)))[:,4,:,4]
+            delta=np.exp((xs*param1[None,:,4]).sum(axis=1))
+            snpAPErho[j]=param1[-1,4]*(2*delta/((delta+1)**2)).mean()
+            deltaAPErho=2*param1[-1,4]\
+                *(xs*(((1-delta)/((1+delta)**3))[:,None])).mean(axis=0)
+            deltaAPErho[-1]=(2*delta/((delta+1)**2)).mean()+deltaAPErho[-1]
+            snpAPErhoSE[j]=(deltaAPErho@gcVar@deltaAPErho)**0.5
             snp[j,:]=param1[-1,:]
             snpSE[j,:]=param1SE[-1,:]
-            snpRobustSE[j,:]=param1RobustSE[-1,:]
             snpLRT[j]=2*n*(logL1-logL0)
         else:
             warnings.warn('Model for SNP '+str(j)+' did not converge')
     snpWald=(snp/snpSE)**2
-    snpRobustWald=(snp/snpRobustSE)**2
-    return param0,param0SE,snp,snpSE,snpRobustSE,snpWald,snpRobustWald,snpLRT
+    snpPWald=1-stats.chi2.cdf(snpWald,1)
+    snpPLRT=1-stats.chi2.cdf(snpLRT,5)
+    return param0,param0SE,snp,snpSE,snpWald,snpPWald,snpLRT,snpPLRT\
+        ,snpAPEsig1,snpAPEsig1SE,snpAPEsig2,snpAPEsig2SE\
+            ,snpAPErho,snpAPErhoSE
 
 def SimulateData(seed,h2y1,h2y2,h2sig1,h2sig2,h2rho,rhog,rhoe,dispersionrhoe):
     # define globals for data and true parameters
@@ -310,7 +333,13 @@ def Test():
     rhoe=0
     dispersionrhoe=0.5
     SimulateData(seed,h2y1,h2y2,h2sig1,h2sig2,h2rho,rhog,rhoe,dispersionrhoe)
-    (param0,param0SE,snp,snpSE,snpRobustSE,snpWald,snpRobustWald,snpLRT)=GCAT()
-    return param0,param0SE,snp,snpSE,snpRobustSE,snpWald,snpRobustWald,snpLRT
+    (param0,param0SE,snp,snpSE,snpWald,snpPWald,snpLRT,snpPLRT\
+        ,snpAPEsig1,snpAPEsig1SE,snpAPEsig2,snpAPEsig2SE\
+            ,snpAPErho,snpAPErhoSE)=GCAT()
+    return param0,param0SE,snp,snpSE,snpWald,snpPWald,snpLRT,snpPLRT\
+        ,snpAPEsig1,snpAPEsig1SE,snpAPEsig2,snpAPEsig2SE\
+            ,snpAPErho,snpAPErhoSE
 
-(param0,param0SE,snp,snpSE,snpRobustSE,snpWald,snpRobustWald,snpLRT)=Test()
+(param0,param0SE,snp,snpSE,snpWald,snpPWald,snpLRT,snpPLRT\
+    ,snpAPEsig1,snpAPEsig1SE,snpAPEsig2,snpAPEsig2SE\
+        ,snpAPErho,snpAPErhoSE)=Test()
