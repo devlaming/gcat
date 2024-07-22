@@ -9,17 +9,29 @@ TOL=1E-12
 TAUTRUEMAF=0.05
 TAUDATAMAF=0.01
 MINVAR=0.01
-MINEVALMH=1E-6
+MINEVALMH=1E-3
 thetainv=2/(1+5**0.5)
 
 def CalcLogL(param,logLonly=False):
     # calculate log-likelihood constant
     cons=2*n*np.log(2*np.pi)
-    # calculate st dev Y1, Y2, delta, rho, and 1-rho^2
+    # calculate st dev Y1, Y2, delta, rho
     sig1=np.exp((xs*param[None,:,2]).sum(axis=1))
     sig2=np.exp((xs*param[None,:,3]).sum(axis=1))
     delta=np.exp((xs*param[None,:,4]).sum(axis=1))
     rho=(delta-1)/(delta+1)
+    # if at least one st.dev is zero: just return logL at -np.inf
+    if (((sig1==0).sum())+((sig2==0).sum()))>0:
+        return -np.inf
+    # if at least one delta is 0 or np.inf: just return logL at -np.inf
+    if (((delta==0).sum())+(np.isinf(delta).sum()))>0:
+        return -np.inf
+    # if at least one rsq is 1: just return logL at -np.inf
+    if ((rho**2==1).sum())>0:
+        return -np.inf
+    # update rho to yield correlation of one in case delta is np.inf
+    rho[np.isinf(delta)]=1
+    # calculate 1-rsq
     unexp=(1-(rho**2))
     # calculate errors and rescaled errors (i.e. error/stdev)
     e1=y1-(xs*param[None,:,0]).sum(axis=1)
@@ -88,10 +100,11 @@ def Newton(param,silent=False):
         UH=(UH+UH.T)/2
         # get eigenvalue decomposition of minus unpackage Hessian
         (D,P)=np.linalg.eigh(-UH)
-        if (D<MINEVALMH).sum()>0:
-            print('bended '+str((D<MINEVALMH).sum())+\
-                  ' eigenvalues Hessian in Newton step')
-            D[D<MINEVALMH]=MINEVALMH
+        # if lowest eigenvalue too low
+        if (D.min()<MINEVALMH):
+            # bend s.t. Newton becomes more like gradient descent
+            a=(MINEVALMH-D.min())/(1-D.min())
+            D=(1-a)*D+a
         # get Newton-Raphson update vector
         update=P@((((grad.reshape((ks*5,1))).T@P)/D).T)
         # calculate convergence criterion
