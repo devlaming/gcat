@@ -6,7 +6,8 @@ from tqdm import tqdm
 global MAXITER,TOL,TAUMAF,MINVAR,MINEVALH,thetainv
 MAXITER=50
 TOL=1E-12
-TAUMAF=0.05
+TAUTRUEMAF=0.05
+TAUDATAMAF=0.01
 MINVAR=0.01
 MINEVALMH=1E-6
 thetainv=2/(1+5**0.5)
@@ -88,7 +89,8 @@ def Newton(param,silent=False):
         # get eigenvalue decomposition of minus unpackage Hessian
         (D,P)=np.linalg.eigh(-UH)
         if (D<MINEVALMH).sum()>0:
-            print('bended '+str((D<MINEVALMH).sum())+' eigenvalues of Hessian for numerical stability')
+            print('bended '+str((D<MINEVALMH).sum())+\
+                  ' eigenvalues Hessian in Newton step')
             D[D<MINEVALMH]=MINEVALMH
         # get Newton-Raphson update vector
         update=P@((((grad.reshape((ks*5,1))).T@P)/D).T)
@@ -197,11 +199,11 @@ def GCAT():
 
 def SimulateData(seed,h2y1,h2y2,h2sig1,h2sig2,h2rho,rhog,rhoe,dispersionrhoe):
     # define globals for data and true parameters
-    global k,ks,y1,y2,x,xs,g,paramtrue
+    global k,ks,y1,y2,x,xs,g,paramtrue,eaf
     # set random-number generator
     rng=np.random.default_rng(seed)
-    # draw allele frequencies between (MAFTAU,1-MAFTAU)
-    f=TAUMAF+(1-2*TAUMAF)*rng.uniform(size=m)
+    # draw allele frequencies between (TAUTRUEMAF,1-TAUTRUEMAF)
+    f=TAUTRUEMAF+(1-2*TAUTRUEMAF)*rng.uniform(size=m)
     # initialise genotype matrix and empirical AF
     g=np.zeros((n,m))
     eaf=np.zeros(m)
@@ -219,10 +221,10 @@ def SimulateData(seed,h2y1,h2y2,h2sig1,h2sig2,h2rho,rhog,rhoe,dispersionrhoe):
         # calculate empirical AF
         eaf[notdone]=thisg.mean(axis=0)/2
         # find SNPs with insufficient variation
-        notdone=2*(eaf*(1-eaf))<MINVAR
+        notdone=(eaf*(1-eaf))<(TAUDATAMAF*(1-TAUDATAMAF))
         mnotdone=notdone.sum()
     # standardise genotype matrix
-    g=(g-2*(eaf[None,:]))/(((2*eaf*(1-eaf))**0.5)[None,:])
+    gs=(g-2*(eaf[None,:]))/(((2*eaf*(1-eaf))**0.5)[None,:])
     # draw factors for SNP effects on expectations
     gf1=rng.normal(size=m)
     gf2=rng.normal(size=m)
@@ -238,12 +240,12 @@ def SimulateData(seed,h2y1,h2y2,h2sig1,h2sig2,h2rho,rhog,rhoe,dispersionrhoe):
     esig2=rng.normal(size=n)*((1-h2sig2)**0.5)
     erho=dispersionrhoe*(rng.normal(size=n)*((1-h2rho)**0.5))
     # calculate standard deviations
-    sig1=np.exp(-1+esig1+((g*beta1[None,:]).sum(axis=1)))
-    sig2=np.exp(-1+esig2+((g*beta2[None,:]).sum(axis=1)))
+    sig1=np.exp(-1+esig1+((gs*beta1[None,:]).sum(axis=1)))
+    sig2=np.exp(-1+esig2+((gs*beta2[None,:]).sum(axis=1)))
     # find intercept for linear part of correlation, such that average
     # correlation equals rhoe
     gamma0=np.log((1+rhoe)/(1-rhoe))
-    delta=np.exp(gamma0+erho+((g*gamma[None,:]).sum(axis=1)))
+    delta=np.exp(gamma0+erho+((gs*gamma[None,:]).sum(axis=1)))
     rho=(delta-1)/(delta+1)
     # draw noise factors
     eta1=rng.normal(size=n)
@@ -252,35 +254,36 @@ def SimulateData(seed,h2y1,h2y2,h2sig1,h2sig2,h2rho,rhog,rhoe,dispersionrhoe):
     e1=sig1*eta1*((1-h2y1)**0.5)
     e2=((rho*eta1)+(((1-(rho**2))**0.5)*eta2))*sig2*((1-h2y2)**0.5)
     # draw outcomes
-    y1=((g*alpha1[None,:]).sum(axis=1))+e1
-    y2=((g*alpha2[None,:]).sum(axis=1))+e2
+    y1=((gs*alpha1[None,:]).sum(axis=1))+e1
+    y2=((gs*alpha2[None,:]).sum(axis=1))+e2
     # set intercept as baseline model regressor
     x=np.ones((n,1))
     xs=x.copy()
     k=1
     ks=1
     # store true effects
-    paramtrue=np.ones((m+1,5))
-    paramtrue[1:,0]=alpha1
-    paramtrue[1:,1]=alpha2
-    paramtrue[1:,2]=beta1
-    paramtrue[1:,3]=beta2
-    paramtrue[1:,4]=gamma
+    paramtrue=np.empty((m+1,5))
+    paramtrue[1:,0]=alpha1/((2*eaf*(1-eaf))**0.5)
+    paramtrue[1:,1]=alpha2/((2*eaf*(1-eaf))**0.5)
+    paramtrue[1:,2]=beta1/((2*eaf*(1-eaf))**0.5)
+    paramtrue[1:,3]=beta2/((2*eaf*(1-eaf))**0.5)
+    paramtrue[1:,4]=gamma/((2*eaf*(1-eaf))**0.5)
+    paramtrue[0,:]=-2*((paramtrue[1:,:]*eaf[:,None]).sum(axis=0))
 
 def Test():
     global n,m
     print('1. SIMULATING DATA')
     seed=1873798321
     n=int(5e4)
-    m=1000
-    h2y1=0.5
-    h2y2=0.4
-    h2sig1=0.3
-    h2sig2=0.2
-    h2rho=0.1
-    rhog=0.7
-    rhoe=0.6
-    dispersionrhoe=0.1
+    m=100
+    h2y1=0.4
+    h2y2=0.5
+    h2sig1=0.6
+    h2sig2=0.7
+    h2rho=0.8
+    rhog=0.9
+    rhoe=0
+    dispersionrhoe=0.5
     SimulateData(seed,h2y1,h2y2,h2sig1,h2sig2,h2rho,rhog,rhoe,dispersionrhoe)
     (param0,param0SE,snp,snpSE,snpRobustSE,snpWald,snpRobustWald,snpLRT)=GCAT()
     return param0,param0SE,snp,snpSE,snpRobustSE,snpWald,snpRobustWald,snpLRT
