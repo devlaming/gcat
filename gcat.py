@@ -15,7 +15,7 @@ thetainv=2/(1+5**0.5)
 
 def CalcLogL(param,logLonly=False):
     # calculate log-likelihood constant
-    cons=2*n*np.log(2*np.pi)
+    cons=N*np.log(2*np.pi)
     # calculate st dev Y1, Y2, delta, rho
     sig1=np.exp((xs*param[None,:,2]).sum(axis=1))
     sig2=np.exp((xs*param[None,:,3]).sum(axis=1))
@@ -39,20 +39,28 @@ def CalcLogL(param,logLonly=False):
             return logL
         else:
             return logL,None,None,None
-    # update rho to yield correlation of one in case delta is np.inf
-    rho[np.isinf(delta)]=1
-    # calculate 1-rsq
-    unexp=(1-(rho**2))
-    # calculate errors and rescaled errors (i.e. error/stdev)
+    # calculate errors 
     e1=y1-(xs*param[None,:,0]).sum(axis=1)
     e2=y2-(xs*param[None,:,1]).sum(axis=1)
+    # set rho and errors to zero and delta to one at missing points
+    rho[~ybothnotnan]=0
+    e1[~y1notnan]=0
+    e2[~y2notnan]=0
+    delta[~ybothnotnan]=1
+    # set sigma1 to np.inf when y1 is missing and vice versa
+    sig1[~y1notnan]=np.inf
+    sig2[~y2notnan]=np.inf
+    # calculate rescaled errors (i.e. error/stdev)
     r1=(e1/sig1)
     r2=(e2/sig2)
+    # calculate 1-rsq
+    unexp=1-(rho**2)
     # calculate log|V| and quadratic term
-    logdetV=2*n*np.log(2)\
-        +((xs*(((2*param[:,2]+2*param[:,3]+param[:,4]))[None,:])).sum())\
-        -2*((np.log(delta+1)).sum())
-    quadratic=(((r1**2)+(r2**2)-2*(rho*r1*r2))/(1-(rho**2))).sum()
+    logdetV=2*nboth*np.log(2)+(xs[ybothnotnan,:]*(param[:,4])[None,:]).sum()\
+        +(xs[y1notnan,:]*(2*param[:,2])).sum()\
+            +(xs[y2notnan,:]*(2*param[:,3])).sum()\
+            -2*((np.log(delta[ybothnotnan]+1)).sum())
+    quadratic=(((r1**2)+(r2**2)-2*(rho*r1*r2))/unexp).sum()
     # calculate logL/n
     logL=-0.5*(cons+logdetV+quadratic)/n
     if logLonly:
@@ -67,6 +75,10 @@ def CalcLogL(param,logLonly=False):
         G[:,4,:]=((xs*((0.5*rho-0.5*((((delta**2)-1)/(4*delta))*(r1**2+r2**2)\
                                     -(((delta**2+1)/(2*delta))\
                                       *r1*r2)))[:,None]))/n).T
+        # set gradient to zero w.r.t. beta1 for observation with missing y1
+        # and idem w.r.t. beta2 if y2 is missing
+        G[:,2,~y1notnan]=0
+        G[:,3,~y2notnan]=0
         # calculate gradient by summing gradient per obs along observations
         grad=G.sum(axis=2)
         # initialise hessian
@@ -88,9 +100,9 @@ def CalcLogL(param,logLonly=False):
         H[:,2,:,3]=-(xs.T@(xs*(((1/unexp)*(-rho*r1*r2))[:,None])))/n
         H[:,2,:,4]=-(xs.T@(xs*(((0.5*r1*r2)-((rho/unexp)*(r1**2)))[:,None])))/n
         H[:,3,:,4]=-(xs.T@(xs*(((0.5*r1*r2)-((rho/unexp)*(r2**2)))[:,None])))/n
-        H[:,4,:,4]=-(xs.T@(xs*(((((((delta**2)+1)/(8*delta))*((r1**2)+(r2**2)))\
+        H[:,4,:,4]=-(xs[ybothnotnan,:].T@(xs[ybothnotnan,:]*(((((((delta**2)+1)/(8*delta))*((r1**2)+(r2**2)))\
                           -((((delta**2)-1)/(4*delta))*(r1*r2)))\
-                         -((1-rho**2)/4))[:,None])))/n
+                         -(unexp/4))[ybothnotnan,None])))/n
         for i in range(4):
             for j in range(i+1,5):
                 H[:,j,:,i]=H[:,i,:,j]
@@ -168,19 +180,22 @@ def GoldenSection(param1,update):
     return param2,i
 
 def InitialiseParams():
-    invXTX=np.linalg.inv((x.T@x)/n)
-    a1=invXTX@((x.T@y1)/n)
-    a2=invXTX@((x.T@y2)/n)
+    x1=x[y1notnan,:]
+    x2=x[y2notnan,:]
+    invXTX1=np.linalg.inv((x1.T@x1)/n)
+    invXTX2=np.linalg.inv((x2.T@x2)/n)
+    a1=invXTX1@((x1.T@y1[y1notnan])/n)
+    a2=invXTX2@((x2.T@y2[y2notnan])/n)
     e1=y1-x@a1
     e2=y2-x@a2
     z1=0.5*np.log(e1**2)
     z2=0.5*np.log(e2**2)
-    b1=invXTX@((x.T@z1)/n)
-    b2=invXTX@((x.T@z2)/n)
-    gc=np.zeros(k)
+    b1=invXTX1@((x1.T@z1[y1notnan])/n)
+    b2=invXTX2@((x2.T@z2[y2notnan])/n)
     r1=e1/np.exp(x@b1)
     r2=e2/np.exp(x@b2)
-    rhomean=(np.corrcoef(r1,r2))[0,1]
+    rhomean=(np.corrcoef(r1[ybothnotnan],r2[ybothnotnan]))[0,1]
+    gc=np.zeros(k)
     gc[0]=np.log((1+rhomean)/(1-rhomean))
     param0=np.vstack((a1,a2,b1,b2,gc)).T
     return param0
@@ -222,20 +237,20 @@ def GCAT():
             b2Var=(param1Var.reshape((ks,5,ks,5)))[:,3,:,3]
             sig1=np.exp((xs*param1[None,:,2]).sum(axis=1))
             sig2=np.exp((xs*param1[None,:,3]).sum(axis=1))
-            snpAPEsig1[j]=param1[-1,2]*sig1.mean()
-            snpAPEsig2[j]=param1[-1,3]*sig2.mean()
-            deltaAPEsig1=param1[-1,2]*(xs*sig1[:,None]).mean(axis=0)
-            deltaAPEsig2=param1[-1,3]*(xs*sig2[:,None]).mean(axis=0)
-            deltaAPEsig1[-1]=sig1.mean()+deltaAPEsig1[-1]
-            deltaAPEsig2[-1]=sig2.mean()+deltaAPEsig2[-1]
+            snpAPEsig1[j]=param1[-1,2]*sig1[y1notnan].mean()
+            snpAPEsig2[j]=param1[-1,3]*sig2[y2notnan].mean()
+            deltaAPEsig1=param1[-1,2]*(xs*sig1[:,None])[y1notnan,:].mean(axis=0)
+            deltaAPEsig2=param1[-1,3]*(xs*sig2[:,None])[y2notnan,:].mean(axis=0)
+            deltaAPEsig1[-1]=sig1[y1notnan].mean()+deltaAPEsig1[-1]
+            deltaAPEsig2[-1]=sig2[y2notnan].mean()+deltaAPEsig2[-1]
             snpAPEsig1SE[j]=(deltaAPEsig1@b1Var@deltaAPEsig1)**0.5
             snpAPEsig2SE[j]=(deltaAPEsig2@b2Var@deltaAPEsig2)**0.5
             gcVar=(param1Var.reshape((ks,5,ks,5)))[:,4,:,4]
             delta=np.exp((xs*param1[None,:,4]).sum(axis=1))
-            snpAPErho[j]=param1[-1,4]*(2*delta/((delta+1)**2)).mean()
+            snpAPErho[j]=param1[-1,4]*(2*delta/((delta+1)**2))[ybothnotnan].mean()
             deltaAPErho=2*param1[-1,4]\
-                *(xs*(((1-delta)/((1+delta)**3))[:,None])).mean(axis=0)
-            deltaAPErho[-1]=(2*delta/((delta+1)**2)).mean()+deltaAPErho[-1]
+                *(xs*(((1-delta)/((1+delta)**3))[:,None]))[ybothnotnan,:].mean(axis=0)
+            deltaAPErho[-1]=(2*delta/((delta+1)**2))[ybothnotnan].mean()+deltaAPErho[-1]
             snpAPErhoSE[j]=(deltaAPErho@gcVar@deltaAPErho)**0.5
             snp[j,:]=param1[-1,:]
             snpSE[j,:]=param1SE[-1,:]
@@ -251,7 +266,7 @@ def GCAT():
 
 def SimulateData(seed,h2y1,h2y2,rG,h2sig1,h2sig2,h2rho,rholoc,rhoscale):
     # define globals for data and true parameters
-    global k,ks,y1,y2,x,xs,g,paramtrue,eaf
+    global n,N,k,ks,y1,y2,y1notnan,y2notnan,ybothnotnan,nboth,x,xs,g,paramtrue,eaf
     # set random-number generator
     rng=np.random.default_rng(seed)
     # draw allele frequencies between (TAUTRUEMAF,1-TAUTRUEMAF)
@@ -308,13 +323,7 @@ def SimulateData(seed,h2y1,h2y2,rG,h2sig1,h2sig2,h2rho,rholoc,rhoscale):
     # draw outcomes
     y1=((gs*alpha1[None,:]).sum(axis=1))+e1
     y2=((gs*alpha2[None,:]).sum(axis=1))+e2
-    # set intercept as baseline model regressor
-    x=np.ones((n,1))
-    xs=x.copy()
-    k=1
-    ks=1
-    # convert true standardised genotype effects to true raw genotype effects
-    # and store
+    # convert true standardised effects to raw effects, and store
     paramtrue=np.empty((m+1,5))
     paramtrue[1:,0]=alpha1/((2*eaf*(1-eaf))**0.5)
     paramtrue[1:,1]=alpha2/((2*eaf*(1-eaf))**0.5)
@@ -322,9 +331,33 @@ def SimulateData(seed,h2y1,h2y2,rG,h2sig1,h2sig2,h2rho,rholoc,rhoscale):
     paramtrue[1:,3]=beta2/((2*eaf*(1-eaf))**0.5)
     paramtrue[1:,4]=gamma/((2*eaf*(1-eaf))**0.5)
     paramtrue[0,:]=-2*((paramtrue[1:,:]*eaf[:,None]).sum(axis=0))
-    paramtrue[0,2]=paramtrue[0,2]+0.5*np.log((1-h2y1))
-    paramtrue[0,3]=paramtrue[0,3]+0.5*np.log((1-h2y2))
+    paramtrue[0,2]=paramtrue[0,2]+0.5*np.log((1-h2y1))-1
+    paramtrue[0,3]=paramtrue[0,3]+0.5*np.log((1-h2y2))-1
     paramtrue[0,4]=paramtrue[0,4]+gamma0
+    # randomly set 1% of data as missing
+    y1[rng.uniform(size=n)<0.01]=np.nan
+    y2[rng.uniform(size=n)<0.01]=np.nan
+    # keep only observations for whom at least one trait is observed
+    atleast1=~(np.isnan(y1)*np.isnan(y2))
+    y1=y1[atleast1]
+    y2=y2[atleast1]
+    g=g[atleast1,:]
+    n=atleast1.sum()
+    # find indices of non missing observations
+    y1notnan=~np.isnan(y1)
+    y2notnan=~np.isnan(y2)
+    # find total number of observation in multivariate model
+    N=(y1notnan.sum())+(y2notnan.sum())
+    # find individuals with complete data
+    ybothnotnan=y1notnan*y2notnan
+    nboth=ybothnotnan.sum()
+    # set intercept as baseline model regressor
+    x=np.ones((n,1))
+    xs=x.copy()
+    k=1
+    ks=1
+    # recalculate empirical AFs
+    eaf=g.mean(axis=0)/2
 
 def Test():
     global n,m
