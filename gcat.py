@@ -75,13 +75,13 @@ def CalcLogL(param,logLonly=False):
         H[:,0,:,0]=-(xs.T@(xs*((1/(unexp*(sig1**2)))[:,None])))/n
         H[:,1,:,1]=-(xs.T@(xs*((1/(unexp*(sig2**2)))[:,None])))/n
         H[:,0,:,1]=-(xs.T@(xs*((-rho/(unexp*sig1*sig2))[:,None])))/n
-        H[:,0,:,2]=-(xs.T@(xs*(((1/(sig1*unexp))*(rho*r2-2*r1))[:,None])))/n
-        H[:,1,:,3]=-(xs.T@(xs*(((1/(sig2*unexp))*(rho*r1-2*r2))[:,None])))/n
-        H[:,0,:,3]=-(xs.T@(xs*(((1/(sig1*unexp))*(rho*r2))[:,None])))/n
-        H[:,1,:,2]=-(xs.T@(xs*(((1/(sig2*unexp))*(rho*r1))[:,None])))/n
-        H[:,0,:,4]=-(xs.T@(xs*(((1/(sig1*unexp))*(rho*r1\
+        H[:,0,:,2]=(xs.T@(xs*(((1/(sig1*unexp))*(rho*r2-2*r1))[:,None])))/n
+        H[:,1,:,3]=(xs.T@(xs*(((1/(sig2*unexp))*(rho*r1-2*r2))[:,None])))/n
+        H[:,0,:,3]=(xs.T@(xs*(((1/(sig1*unexp))*(rho*r2))[:,None])))/n
+        H[:,1,:,2]=(xs.T@(xs*(((1/(sig2*unexp))*(rho*r1))[:,None])))/n
+        H[:,0,:,4]=(xs.T@(xs*(((1/(sig1*unexp))*(rho*r1\
                                            -((1+(rho**2))*(r2/2))))[:,None])))/n
-        H[:,1,:,4]=-(xs.T@(xs*(((1/(sig2*unexp))*(rho*r2\
+        H[:,1,:,4]=(xs.T@(xs*(((1/(sig2*unexp))*(rho*r2\
                                            -((1+(rho**2))*(r1/2))))[:,None])))/n
         H[:,2,:,2]=-(xs.T@(xs*(((1/unexp)*(2*(r1**2)-rho*r1*r2))[:,None])))/n
         H[:,3,:,3]=-(xs.T@(xs*(((1/unexp)*(2*(r2**2)-rho*r1*r2))[:,None])))/n
@@ -178,6 +178,10 @@ def InitialiseParams():
     b1=invXTX@((x.T@z1)/n)
     b2=invXTX@((x.T@z2)/n)
     gc=np.zeros(k)
+    r1=e1/np.exp(x@b1)
+    r2=e2/np.exp(x@b2)
+    rhomean=(np.corrcoef(r1,r2))[0,1]
+    gc[0]=np.log((1+rhomean)/(1-rhomean))
     param0=np.vstack((a1,a2,b1,b2,gc)).T
     return param0
 
@@ -245,7 +249,7 @@ def GCAT():
         ,snpAPEsig1,snpAPEsig1SE,snpAPEsig2,snpAPEsig2SE\
             ,snpAPErho,snpAPErhoSE
 
-def SimulateData(seed,h2y1,h2y2,h2sig1,h2sig2,h2rho,rhog,rhoe,dispersionrhoe):
+def SimulateData(seed,h2y1,h2y2,rG,h2sig1,h2sig2,h2rho,rholoc,rhoscale):
     # define globals for data and true parameters
     global k,ks,y1,y2,x,xs,g,paramtrue,eaf
     # set random-number generator
@@ -278,28 +282,28 @@ def SimulateData(seed,h2y1,h2y2,h2sig1,h2sig2,h2rho,rhog,rhoe,dispersionrhoe):
     gf2=rng.normal(size=m)
     # draw correlated SNP effects on expectations
     alpha1=gf1*((h2y1/m)**0.5)
-    alpha2=((rhog*gf1)+(((1-(rhog**2))**0.5)*gf2))*((h2y2/m)**0.5)
+    alpha2=((rG*gf1)+(((1-(rG**2))**0.5)*gf2))*((h2y2/m)**0.5)
     # draw SNP effects on variances and correlation
     beta1=rng.normal(size=m)*((h2sig1/m)**0.5)
     beta2=rng.normal(size=m)*((h2sig2/m)**0.5)
-    gamma=dispersionrhoe*(rng.normal(size=m)*((h2rho/m)**0.5))
+    gamma=rhoscale*(rng.normal(size=m)*((h2rho/m)**0.5))
     # draw error terms for sigma and rho
     esig1=rng.normal(size=n)*((1-h2sig1)**0.5)
     esig2=rng.normal(size=n)*((1-h2sig2)**0.5)
-    erho=dispersionrhoe*(rng.normal(size=n)*((1-h2rho)**0.5))
+    erho=rhoscale*(rng.normal(size=n)*((1-h2rho)**0.5))
     # calculate standard deviations
     sig1=np.exp(-1+esig1+((gs*beta1[None,:]).sum(axis=1)))
     sig2=np.exp(-1+esig2+((gs*beta2[None,:]).sum(axis=1)))
     # find intercept for linear part of correlation, such that average
-    # correlation equals rhoe
-    gamma0=np.log((1+rhoe)/(1-rhoe))
+    # correlation equals rholoc
+    gamma0=np.log((1+rholoc)/(1-rholoc))
     delta=np.exp(gamma0+erho+((gs*gamma[None,:]).sum(axis=1)))
     rho=(delta-1)/(delta+1)
     # draw noise factors
     eta1=rng.normal(size=n)
     eta2=rng.normal(size=n)
     # scale and mix noise to achieve desired standard deviations and correlations 
-    e1=sig1*eta1*((1-h2y1)**0.5)
+    e1=eta1*sig1*((1-h2y1)**0.5)
     e2=((rho*eta1)+(((1-(rho**2))**0.5)*eta2))*sig2*((1-h2y2)**0.5)
     # draw outcomes
     y1=((gs*alpha1[None,:]).sum(axis=1))+e1
@@ -309,7 +313,8 @@ def SimulateData(seed,h2y1,h2y2,h2sig1,h2sig2,h2rho,rhog,rhoe,dispersionrhoe):
     xs=x.copy()
     k=1
     ks=1
-    # store true effects
+    # convert true standardised genotype effects to true raw genotype effects
+    # and store
     paramtrue=np.empty((m+1,5))
     paramtrue[1:,0]=alpha1/((2*eaf*(1-eaf))**0.5)
     paramtrue[1:,1]=alpha2/((2*eaf*(1-eaf))**0.5)
@@ -317,6 +322,9 @@ def SimulateData(seed,h2y1,h2y2,h2sig1,h2sig2,h2rho,rhog,rhoe,dispersionrhoe):
     paramtrue[1:,3]=beta2/((2*eaf*(1-eaf))**0.5)
     paramtrue[1:,4]=gamma/((2*eaf*(1-eaf))**0.5)
     paramtrue[0,:]=-2*((paramtrue[1:,:]*eaf[:,None]).sum(axis=0))
+    paramtrue[0,2]=paramtrue[0,2]+0.5*np.log((1-h2y1))
+    paramtrue[0,3]=paramtrue[0,3]+0.5*np.log((1-h2y2))
+    paramtrue[0,4]=paramtrue[0,4]+gamma0
 
 def Test():
     global n,m
@@ -326,13 +334,13 @@ def Test():
     m=100
     h2y1=0.4
     h2y2=0.5
+    rG=0.9
     h2sig1=0.6
     h2sig2=0.7
     h2rho=0.8
-    rhog=0.9
-    rhoe=0
-    dispersionrhoe=0.5
-    SimulateData(seed,h2y1,h2y2,h2sig1,h2sig2,h2rho,rhog,rhoe,dispersionrhoe)
+    rholoc=0
+    rhoscale=0.5
+    SimulateData(seed,h2y1,h2y2,rG,h2sig1,h2sig2,h2rho,rholoc,rhoscale)
     (param0,param0SE,snp,snpSE,snpWald,snpPWald,snpLRT,snpPLRT\
         ,snpAPEsig1,snpAPEsig1SE,snpAPEsig2,snpAPEsig2SE\
             ,snpAPErho,snpAPErhoSE)=GCAT()
