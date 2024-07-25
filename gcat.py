@@ -307,8 +307,8 @@ def SimulateData(seed,h2y1,h2y2,rG,h2sig1,h2sig2,h2rho,rholoc,rhoscale):
     esig2=rng.normal(size=n)*((1-h2sig2)**0.5)
     erho=rhoscale*(rng.normal(size=n)*((1-h2rho)**0.5))
     # calculate standard deviations
-    sig1=np.exp(-1+esig1+((gs*beta1[None,:]).sum(axis=1)))
-    sig2=np.exp(-1+esig2+((gs*beta2[None,:]).sum(axis=1)))
+    sig1=np.exp(-0.5+esig1+((gs*beta1[None,:]).sum(axis=1)))
+    sig2=np.exp(-0.5+esig2+((gs*beta2[None,:]).sum(axis=1)))
     # find intercept for linear part of correlation, such that average
     # correlation equals rholoc
     gamma0=np.log((1+rholoc)/(1-rholoc))
@@ -331,8 +331,8 @@ def SimulateData(seed,h2y1,h2y2,rG,h2sig1,h2sig2,h2rho,rholoc,rhoscale):
     paramtrue[1:,3]=beta2/((2*eaf*(1-eaf))**0.5)
     paramtrue[1:,4]=gamma/((2*eaf*(1-eaf))**0.5)
     paramtrue[0,:]=-2*((paramtrue[1:,:]*eaf[:,None]).sum(axis=0))
-    paramtrue[0,2]=paramtrue[0,2]+0.5*np.log((1-h2y1))-1
-    paramtrue[0,3]=paramtrue[0,3]+0.5*np.log((1-h2y2))-1
+    paramtrue[0,2]=paramtrue[0,2]+0.5*np.log((1-h2y1))-0.5
+    paramtrue[0,3]=paramtrue[0,3]+0.5*np.log((1-h2y2))-0.5
     paramtrue[0,4]=paramtrue[0,4]+gamma0
     # randomly set 1% of data as missing
     y1[rng.uniform(size=n)<0.01]=np.nan
