@@ -334,9 +334,9 @@ def SimulateData(seed,h2y1,h2y2,rG,h2sig1,h2sig2,h2rho,rholoc,rhoscale):
     paramtrue[0,2]=paramtrue[0,2]+0.5*np.log((1-h2y1))-0.5
     paramtrue[0,3]=paramtrue[0,3]+0.5*np.log((1-h2y2))-0.5
     paramtrue[0,4]=paramtrue[0,4]+gamma0
-    # randomly set 1% of data as missing
-    y1[rng.uniform(size=n)<0.01]=np.nan
-    y2[rng.uniform(size=n)<0.01]=np.nan
+    # randomly set 0% of data as missing
+    y1[rng.uniform(size=n)<0]=np.nan
+    y2[rng.uniform(size=n)<0]=np.nan
     # keep only observations for whom at least one trait is observed
     atleast1=~(np.isnan(y1)*np.isnan(y2))
     y1=y1[atleast1]
