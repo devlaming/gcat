@@ -1,17 +1,45 @@
+import argparse
+import logging
+import time
+import traceback
+import os, psutil
 import numpy as np
 import warnings
 from tqdm import tqdm
 from scipy import stats
+from functools import reduce
 
-# define globals
-global MAXITER,TOL,TAUMAF,MINVAR,MINEVALH,thetainv
+# define constants and output header
 MAXITER=50
 TOL=1E-12
 TAUTRUEMAF=0.05
 TAUDATAMAF=0.01
 MINVAR=0.01
 MINEVALMH=1E-3
+MINN=1000
+MINM=100
 thetainv=2/(1+5**0.5)
+
+# define PLINK binary data variables
+extBED='.bed'
+extBIM='.bim'
+extFAM='.fam'
+extFRQ='.frq'
+binBED1=bytes([0b01101100])
+binBED2=bytes([0b00011011])
+binBED3=bytes([0b00000001])
+nperbyte=4
+lAlleles=['A','C','G','T']
+
+__version__ = 'v0.1'
+HEADER = "\n"
+HEADER += "------------------------------------------------------------\n"
+HEADER += "| GCAT (Genome-wide Cross-trait concordance Analysis Tool) |\n"
+HEADER += "------------------------------------------------------------\n"
+HEADER += "| BETA {V}, (C) 2024 Ronald de Vlaming                    |\n".format(V=__version__)
+HEADER += "| Vrije Universiteit Amsterdam                             |\n"
+HEADER += "| GNU General Public License v3                            |\n"
+HEADER += "------------------------------------------------------------\n"
 
 def CalcLogL(param,logLonly=False):
     # calculate log-likelihood constant
@@ -264,11 +292,105 @@ def GCAT():
         ,snpAPEsig1,snpAPEsig1SE,snpAPEsig2,snpAPEsig2SE\
             ,snpAPErho,snpAPErhoSE
 
-def SimulateData(seed,h2y1,h2y2,rG,h2sig1,h2sig2,h2rho,rholoc,rhoscale):
+def SimulateG():
+    # define globals for genotype data
+    global n,M,Mperb,MR,B,nb,nr,nbt,nleft
+    # get n and M
+    n=args.n
+    M=args.m
+    # give update
+    logger.info('Simulating data on '+str(M)+' SNPs for '+str(n)+' individuals,')
+    logger.info('exporting to PLINK binary files '+args.out+'.bed,.bim,.fam,')
+    logger.info('and writing allele frequencies to '+args.out+'.frq')
+    # set FIDs/IIDs as numbers from 1 to n, set PID and MID to zeroes,
+    # set sex (=1 or 2) as random draw, set phenotype as missing
+    FAM=np.zeros((n,6))
+    FAM[:,0]=1+np.arange(n)
+    FAM[:,1]=FAM[:,0]
+    FAM[:,4]=np.ones(n)+(rng.uniform(size=n)>0.5)
+    FAM[:,5]=-9*np.ones(n)
+    np.savetxt(args.out+extFAM,FAM,fmt='%i\t%i\t%i\t%i\t%i\t%i')
+    # open connection for writing PLINK bed file
+    connbed=open(args.out+extBED,'wb')
+    connbed.write(binBED1)
+    connbed.write(binBED2)
+    connbed.write(binBED3)
+    # open connection to bim file
+    connbim=open(args.out+extBIM,'w')
+    # open connection for writing frequency file
+    connfrq=open(args.out+extFRQ,'w')
+    connfrq.write('CHR\tSNP\tA1\tA2\tAF1\tAF2\n')
+    # found number of SNPs per block
+    Mperb=int(dimg/n)
+    # count modulo(m,#SNPs per block)
+    MR=M%Mperb
+    # count number of blocks (i.e. complete + remainder block if any)
+    B=int(M/Mperb)+(MR>0)
+    # count number of full bytes per SNP
+    nb=int(n/nperbyte)
+    # compute how many individuals in remainder byte per SNP
+    nr=n%nperbyte
+    # compute total export bytes per SNP (full + remainder, if any)
+    nbt=nb+(nr>0)
+    # compute number of observations that would still fit in remainder byte
+    nleft=nbt*nperbyte-n
+    # set counter for total number of SNPs handled for export to .bim
+    i=0
+    # for each blok
+    for b in tqdm(range(B)):
+        # find index for first SNP and last SNP in block
+        m0=b*Mperb
+        m1=min(M,(b+1)*Mperb)
+        # count number of SNP in this block
+        m=m1-m0
+        # draw allele frequencies between (TAUTRUEMAF,1-TAUTRUEMAF)
+        f=TAUTRUEMAF+(1-2*TAUTRUEMAF)*rng.uniform(size=m)
+        # initialise genotype matrix and empirical AF
+        g=np.zeros((n,m),dtype=np.uint8)
+        eaf=np.zeros(m)
+        # set number of SNPs not done drawing yet to m in this block
+        notdone=(np.ones(m)==1)
+        mnotdone=notdone.sum()
+        # while number of SNPs not done is at least 1
+        while mnotdone>0: 
+            # draw as many biallelic SNPs
+            u=rng.uniform(size=(n,mnotdone))
+            thisg=np.ones((n,mnotdone),dtype=np.uint8)
+            thisg[u<(((1-f[notdone])**2)[None,:])]=0
+            thisg[u>((1-(f[notdone]**2))[None,:])]=2
+            g[:,notdone]=thisg
+            # calculate empirical AF
+            eaf[notdone]=thisg.mean(axis=0)/2
+            # find SNPs with insufficient variation
+            notdone=(eaf*(1-eaf))<(TAUDATAMAF*(1-TAUDATAMAF))
+            mnotdone=notdone.sum()
+            # reshape and recode genotype matrix for export
+        # 0=0 alleles; 2=1 allele; 3=2 alleles; 1=missing
+        g=np.vstack((2*g,np.zeros((nleft,m),dtype=np.uint8)))
+        g[g==4]=3
+        # within each byte: 2 bits per individual; 4 individuals per byte in total
+        base=np.array([2**0,2**2,2**4,2**6]*nbt,dtype=np.uint8)
+        # per SNP, per byte: aggregate across individuals in that byte
+        exportbytes=(g*base[:,None]).reshape(nbt,nperbyte,m).sum(axis=1).astype(np.uint8)
+        # write bytes
+        connbed.write(bytes(exportbytes.T.ravel()))
+        # for each SNP in this block
+        for j in range(m):
+            # update counter
+            i+=1
+            # draw two alleles without replacement from four possible alleles
+            A1A2=rng.choice(lAlleles,size=2,replace=False)
+            # write line of .bim file
+            connbim.write('0\trs'+str(i)+'\t0\t'+str(j)+'\t'+A1A2[0]+'\t'+A1A2[1]+'\n')
+            # write line of .frq file
+            connfrq.write('0\trs'+str(i)+'\t'+A1A2[0]+'\t'+A1A2[1]+'\t'+str(1-eaf[j])+'\t'+str(eaf[j])+'\n')
+    connbed.close()
+    connbim.close()
+    connfrq.close()
+
+def SimulateY():
     # define globals for data and true parameters
-    global n,N,k,ks,y1,y2,y1notnan,y2notnan,ybothnotnan,nboth,x,xs,g,paramtrue,eaf
-    # set random-number generator
-    rng=np.random.default_rng(seed)
+    global N,k,ks,y1,y2,y1notnan,y2notnan,ybothnotnan,nboth,x,xs,paramtrue,eaf
     # draw allele frequencies between (TAUTRUEMAF,1-TAUTRUEMAF)
     f=TAUTRUEMAF+(1-2*TAUTRUEMAF)*rng.uniform(size=m)
     # initialise genotype matrix and empirical AF
@@ -359,28 +481,268 @@ def SimulateData(seed,h2y1,h2y2,rG,h2sig1,h2sig2,h2rho,rholoc,rhoscale):
     # recalculate empirical AFs
     eaf=g.mean(axis=0)/2
 
-def Test():
-    global n,m
-    print('1. SIMULATING DATA')
-    seed=1873798321
-    n=int(5e4)
-    m=100
-    h2y1=0.4
-    h2y2=0.5
-    rG=0.9
-    h2sig1=0.6
-    h2sig2=0.7
-    h2rho=0.8
-    rholoc=0
-    rhoscale=0.5
-    SimulateData(seed,h2y1,h2y2,rG,h2sig1,h2sig2,h2rho,rholoc,rhoscale)
-    (param0,param0SE,snp,snpSE,snpWald,snpPWald,snpLRT,snpPLRT\
-        ,snpAPEsig1,snpAPEsig1SE,snpAPEsig2,snpAPEsig2SE\
-            ,snpAPErho,snpAPErhoSE)=GCAT()
-    return param0,param0SE,snp,snpSE,snpWald,snpPWald,snpLRT,snpPLRT\
-        ,snpAPEsig1,snpAPEsig1SE,snpAPEsig2,snpAPEsig2SE\
-            ,snpAPErho,snpAPErhoSE
+def sec_to_str(t):
+    [d,h,m,s,n]=reduce(lambda ll, b : divmod(ll[0], b) + ll[1:], [(t, 1), 60, 60, 24])
+    f = ''
+    if d > 0:
+        f += '{D}d:'.format(D=d)
+    if h > 0:
+        f += '{H}h:'.format(H=h)
+    if m > 0:
+        f += '{M}m:'.format(M=m)
+    f += '{S}s'.format(S=s)
+    return f
 
-(param0,param0SE,snp,snpSE,snpWald,snpPWald,snpLRT,snpPLRT\
-    ,snpAPEsig1,snpAPEsig1SE,snpAPEsig2,snpAPEsig2SE\
-        ,snpAPErho,snpAPErhoSE)=Test()
+def positive_int(string):
+    try:
+        val=int(string)
+    except:
+        raise argparse.ArgumentTypeError(string+" is not a positive integer")
+    if val>0:
+        return val
+    else:
+        raise argparse.ArgumentTypeError("%s is not a positive integer" % val)
+
+def number_between_0_1(string):
+    try:
+        val=float(string)
+    except:
+        raise argparse.ArgumentTypeError(string+" is not a number in the interval (0,1)")
+    if val>0 and val<1:
+        return val
+    else:
+        raise argparse.ArgumentTypeError("%s is not a number in the interval (0,1)" % val)
+
+def number_between_m1_p1(string):
+    try:
+        val=float(string)
+    except:
+        raise argparse.ArgumentTypeError(string+" is not a number in the interval (-1,1)")
+    if (val**2)<1:
+        return val
+    else:
+        raise argparse.ArgumentTypeError("%s is not a number in the interval (-1,1)" % val)
+
+def ParseInputArguments():
+    # get global parser and initialise args as global
+    global args
+    # define input arguments
+    parser.add_argument('--n', metavar = 'INTEGER', default = None, type = positive_int, 
+                    help = '(simulation) number of individuals; at least 1000')
+    parser.add_argument('--m', metavar = 'INTEGER', default = None, type = positive_int, 
+                    help = '(simulation) number of SNPs; at least 100')
+    parser.add_argument('--h2y1', metavar = 'NUMBER', default = None, type = number_between_0_1,
+                    help = '(simulation) heritability of Y1; between 0 and 1')
+    parser.add_argument('--h2y2', metavar = 'NUMBER', default = None, type = number_between_0_1,
+                    help = '(simulation) heritability of Y2; between 0 and 1')
+    parser.add_argument('--rg', metavar = 'NUMBER', default = None, type = number_between_m1_p1,
+                    help = '(simulation) genetic correlation between Y1 and Y2; between -1 and 1')
+    parser.add_argument('--h2sig1', metavar = 'NUMBER', default = None, type = number_between_0_1,
+                    help = '(simulation) heritability of linear part of Var(Error term Y1); between 0 and 1')
+    parser.add_argument('--h2sig2', metavar = 'NUMBER', default = None, type = number_between_0_1,
+                    help = '(simulation) heritability of linear part of Var(Error term Y2); between 0 and 1')
+    parser.add_argument('--h2rho', metavar = 'NUMBER', default = None, type = number_between_0_1,
+                    help = '(simulation) heritability of linear part of Corr(Error term Y1,Error term Y2); between 0 and 1')
+    parser.add_argument('--rhomean', metavar = 'NUMBER', default = None, type = number_between_m1_p1,
+                    help = '(simulation) average Corr(Error term Y1,Error term Y2); between -1 and 1')
+    parser.add_argument('--rhoband', metavar = 'NUMBER', default = None, type = number_between_0_1,
+                    help = '(simulation) probabilistic bandwidth of correlation around level specified using --rhomean; between 0 and 1')
+    parser.add_argument('--seed', metavar = 'INTEGER', default = None, type = positive_int,
+                    help = '(simulation) seed for random-number generator, to control replicability')
+    parser.add_argument('--bfile', metavar = 'PREFIX', default = None, type = str,
+                    help = 'prefix of PLINK binary files; cannot be combined with --n and/or --m')
+    parser.add_argument('--pheno', metavar = 'FILENAME', default = None, type = str,
+                    help = 'name of phenotype file: should be comma-, space-, or tab-separated, with one row per individual, with FID and IID as first two fields, followed by two fields for phenotypes Y1 and Y2; first row must contain labels (e.g. FID IID HEIGHT log(BMI)); requires --bfile to be specified; cannot be combined with --h2y1, --h2y2, --rg, --h2sig1, --h2sig2, --h2rho, --rhomean, --rhoband, and/or --seed')
+    parser.add_argument('--covar', metavar = 'FILENAME', default = None, type = str,
+                    help = 'name of covariate file: should be comma-, space-, or tab-separated, with one row per individual, with FID and IID as first two fields, followed by a field per covariate; first row must contain labels (e.g. FID IID AGE AGESQ PC1 PC2 PC3 PC4 PC5); requires --bfile and --pheno to be specified; cannot be combined with --h2y1, --h2y2, --rg, --h2sig1, --h2sig2, --h2rho, --rhomean --rhoband, and/or --seed; WARNING: do not include an intercept in your covariate file, because GCAT always adds an intercept itself')
+    parser.add_argument('--out', metavar = 'PREFIX', default = None, type = str,
+                    help = 'prefix of output files')
+    try:
+        # parse input arguments
+        args=parser.parse_args()
+    except Exception:
+        raise SyntaxError('you specified incorrect input options')
+        
+def InitialiseLogger():
+    # customise the logger using the prefix for output-files
+    c_handler = logging.StreamHandler()
+    # if no --out option has not been specified, use generic output prefix
+    if args.out is not None:
+        # get directory name if present within prefix
+        sDir = os.path.dirname(args.out)
+        # check if output holds directory name at all, and if so whether it doesn't exist
+        if not(sDir == '') and not(os.path.isdir(sDir)):
+            # if so, raise an error
+            raise ValueError('prefix specified using --out may start with a directory name; this directory must exist however. ' + sDir + ' is not a directory')
+        out=args.out
+    else:
+        out='output'
+    # store prefix and output file for log
+    prefix=out+'.'
+    fileout=prefix+'log'
+    # set the name for the log file
+    f_handler=logging.FileHandler(fileout,'w+',encoding="utf-8")
+    c_handler.setLevel(logging.DEBUG)
+    f_handler.setLevel(logging.DEBUG)
+    logger.setLevel(logging.DEBUG)
+    # for output to the console, just print warnings, info, errors, etc.
+    c_format=logging.Formatter('%(message)s')
+    # for output to the log file also add timestamps
+    f_format = logging.Formatter('%(asctime)s: %(message)s')
+    c_handler.setFormatter(c_format)
+    f_handler.setFormatter(f_format)
+    # add handlers to the logger
+    logger.addHandler(c_handler)
+    logger.addHandler(f_handler)
+
+def ShowWelcome():
+    try:
+        defaults=vars(parser.parse_args(''))
+        opts=vars(args)
+        non_defaults=[x for x in opts.keys() if opts[x] != defaults[x]]
+        header = HEADER
+        header += "\nYour call: \n"
+        header += './gcat.py \\\n'
+        options = ['--'+x.replace('_','-')+' '+str(opts[x])+' \\' for x in non_defaults]
+        header += '\n'.join(options).replace('True','').replace('False','').replace("', \'", ' ').replace("']", '').replace("['", '').replace('[', '').replace(']', '').replace(', ', ' ').replace('  ', ' ')
+        header = header[0:-1]+'\n'
+        logger.info(header)
+    except Exception:
+        raise SyntaxError('you specified incorrect input options')
+
+def CheckInputArgs():
+    global simulg, simuly
+    if args.bfile is not None and (args.n is not None or args.m is not None):
+        raise SyntaxError('you cannot combine --bfile with --n and/or --m')
+    if args.n is not None and args.m is None:
+        raise SyntaxError('--n must be combined with --m')
+    if args.m is not None and args.n is None:
+        raise SyntaxError('--m must be combined with --n')
+    if args.n is None and args.m is None and args.bfile is None:
+        raise SyntaxError('you must specify either --bfile or both --n and --m')
+    if args.bfile is None:
+        simulg=True
+        simuly=True
+        if args.m<MINM:
+            raise ValueError('you simulate at least '+str(MINM)+' SNPs when using --m')
+        if args.n<MINN:
+            raise ValueError('you simulate at least '+str(MINN)+' individuals when using --n')
+        if args.pheno is not None:
+            raise SyntaxError('--pheno cannot be combined with --n and --m')
+        if args.covar is not None:
+            raise SyntaxError('--covar cannot be combined with --n and --m')
+    else:
+        simulg=False
+        if not(os.path.isfile(args.bfile+'.bed')):
+            raise OSError('PLINK binary data file '+args.bfile+'.bed cannot be found')
+        if not(os.path.isfile(args.bfile+'.bim')):
+            raise OSError('PLINK binary data file '+args.bfile+'.bim cannot be found')
+        if not(os.path.isfile(args.bfile+'.fam')):
+            raise OSError('PLINK binary data file '+args.bfile+'.fam cannot be found')
+        if args.pheno is None:
+            simuly=True
+            if args.covar is not None:
+                raise SyntaxError('--covar must be combined with --pheno')
+        else:
+            simuly=False
+            if not(os.path.isfile(args.pheno)):
+                raise OSError('Phenotype file '+args.pheno+ ' cannot be found')
+            if args.covar is None:
+                covars=False
+            else:
+                covars=True
+                if not(os.path.isfile(args.covar)):
+                    raise OSError('Covariate file '+args.covar+ ' cannot be found')
+    if simuly:
+        if args.h2y1 is None:
+            raise SyntaxError('--h2y1 must be specified when simulating phenotypes')
+        if args.h2y2 is None:
+            raise SyntaxError('--h2y2 must be specified when simulating phenotypes')
+        if args.rg is None:
+            raise SyntaxError('--rg must be specified when simulating phenotypes')
+        if args.h2sig1 is None:
+            raise SyntaxError('--h2sig1 must be specified when simulating phenotypes')
+        if args.h2sig2 is None:
+            raise SyntaxError('--h2sig2 must be specified when simulating phenotypes')
+        if args.h2rho is None:
+            raise SyntaxError('--h2rho must be specified when simulating phenotypes')
+        if args.rhomean is None:
+            raise SyntaxError('--rhomean must be specified when simulating phenotypes')
+        if args.rhoband is None:
+            raise SyntaxError('--rhoband must be specified when simulating phenotypes')
+    else:
+        if args.h2y1 is not None:
+            raise SyntaxError('--h2y1 cannot be combined with --pheno')
+        if args.h2y2 is not None:
+            raise SyntaxError('--h2y2 cannot be combined with --pheno')
+        if args.rg is not None:
+            raise SyntaxError('--rg cannot be combined with --pheno')
+        if args.h2sig1 is not None:
+            raise SyntaxError('--h2sig1 cannot be combined with --pheno')
+        if args.h2sig2 is not None:
+            raise SyntaxError('--h2sig2 cannot be combined with --pheno')
+        if args.h2rho is not None:
+            raise SyntaxError('--h2rho cannot be combined with --pheno')
+        if args.rhomean is not None:
+            raise SyntaxError('--rhomean cannot be combined with --pheno')
+        if args.rhoband is not None:
+            raise SyntaxError('--rhoband cannot be combined with --pheno')
+    if not(simulg) and not(simuly):
+        if args.seed is not None:
+            raise SyntaxError('--seed may not be specified when neither genetic nor phenotype data is simulated')
+    if simulg or simuly:
+        if args.seed is None:
+            raise SyntaxError('--seed must be specified when simulating data')
+        global rng
+        rng=np.random.default_rng(args.seed)
+
+def FindBlockSize():
+    global dimg
+    # assigning 1% of available RAM to storage of raw genotypes
+    # calculate how many raw genotypes can be held in RAM
+    availtotal=(psutil.virtual_memory()[1])
+    dimg=int(0.01*availtotal)
+
+def main():
+    # set parser, logger, memory tracker as globals
+    global parser,logger,process
+    # get start time
+    t0=time.time()
+    # initialise parser
+    parser=argparse.ArgumentParser()
+    # initialise logger
+    logger=logging.getLogger(__name__)
+    # initialise memory tracker
+    process=psutil.Process(os.getpid())
+    try: # try gcat
+        # Parse input arguments
+        ParseInputArguments()
+        # Initialise logger
+        InitialiseLogger()
+        # Print welcome screen
+        ShowWelcome()
+        # Perform basic checks on input arguments
+        CheckInputArgs()
+        # Determine block size with which we can process SNPs staying within RAM
+        FindBlockSize()
+        # Simulate genotypes if necessary
+        if simulg:
+            SimulateG()
+        # Simulate phenotypes if necessary
+        #if simuly:
+        #    SimulateY()
+        # Perform GCAT
+        #GCAT()
+    except Exception:
+        # print the traceback
+        logger.error(traceback.format_exc())
+        # wrap up with final error message
+        logger.error('Error: GCAT did not exit properly. Please inspect the log file.')
+        logger.info('Run `python ./gcat.py -h` to show all options')
+    finally:
+        # print total time elapsed
+        logger.info('Total time elapsed: {T}'.format(T=sec_to_str(round(time.time()-t0, 2))))
+        logger.info('Current memory usage is ' + str(int((process.memory_info().rss)/(1024**2))) + 'MB')
+
+if __name__ == '__main__':
+    main()
