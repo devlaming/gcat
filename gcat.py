@@ -5,6 +5,7 @@ import traceback
 import os, psutil
 import numpy as np
 import warnings
+import mmap
 from tqdm import tqdm
 from scipy import stats
 from functools import reduce
@@ -293,8 +294,6 @@ def GCAT():
             ,snpAPErho,snpAPErhoSE
 
 def SimulateG():
-    # define globals for genotype data
-    global n,M,Mperb,MR,B,nb,nr,nbt,nleft
     # get n and M
     n=args.n
     M=args.m
@@ -322,6 +321,7 @@ def SimulateG():
     connfrq.write('CHR\tSNP\tA1\tA2\tAF1\tAF2\n')
     # found number of SNPs per block
     Mperb=int(dimg/n)
+    logger.info('Simulating SNPs and writing .bim file in blocks of '+str(Mperb)+' SNPs')
     # count modulo(m,#SNPs per block)
     MR=M%Mperb
     # count number of blocks (i.e. complete + remainder block if any)
@@ -384,82 +384,143 @@ def SimulateG():
             connbim.write('0\trs'+str(i)+'\t0\t'+str(j)+'\t'+A1A2[0]+'\t'+A1A2[1]+'\n')
             # write line of .frq file
             connfrq.write('0\trs'+str(i)+'\t'+A1A2[0]+'\t'+A1A2[1]+'\t'+str(1-eaf[j])+'\t'+str(eaf[j])+'\n')
+    # close connections
     connbed.close()
     connbim.close()
     connfrq.close()
+    # store prefix of just generated PLINK binary files
+    args.bfile=args.out
+
+def CountLines(filename):
+    with open(filename, "r+") as f:
+        buffer=mmap.mmap(f.fileno(), 0)
+        lines=0
+        readline=buffer.readline
+        while readline():
+            lines+=1
+    return lines
 
 def SimulateY():
-    # define globals for data and true parameters
-    global N,k,ks,y1,y2,y1notnan,y2notnan,ybothnotnan,nboth,x,xs,paramtrue,eaf
-    # draw allele frequencies between (TAUTRUEMAF,1-TAUTRUEMAF)
-    f=TAUTRUEMAF+(1-2*TAUTRUEMAF)*rng.uniform(size=m)
-    # initialise genotype matrix and empirical AF
-    g=np.zeros((n,m))
-    eaf=np.zeros(m)
-    # set number of SNPs not done drawing yet to m
-    notdone=(np.ones(m)==1)
-    mnotdone=notdone.sum()
-    # while number of SNPs not done is at least 1
-    while mnotdone>0: 
-        # draw as many biallelic SNPs
-        u=rng.uniform(size=(n,mnotdone))
-        thisg=np.ones((n,mnotdone))
-        thisg[u<(((1-f[notdone])**2)[None,:])]=0
-        thisg[u>((1-(f[notdone]**2))[None,:])]=2
-        g[:,notdone]=thisg
-        # calculate empirical AF
-        eaf[notdone]=thisg.mean(axis=0)/2
-        # find SNPs with insufficient variation
-        notdone=(eaf*(1-eaf))<(TAUDATAMAF*(1-TAUDATAMAF))
-        mnotdone=notdone.sum()
-    # standardise genotype matrix
-    gs=(g-2*(eaf[None,:]))/(((2*eaf*(1-eaf))**0.5)[None,:])
-    # draw factors for SNP effects on expectations
-    gf1=rng.normal(size=m)
-    gf2=rng.normal(size=m)
-    # draw correlated SNP effects on expectations
-    alpha1=gf1*((h2y1/m)**0.5)
-    alpha2=((rG*gf1)+(((1-(rG**2))**0.5)*gf2))*((h2y2/m)**0.5)
-    # draw SNP effects on variances and correlation
-    beta1=rng.normal(size=m)*((h2sig1/m)**0.5)
-    beta2=rng.normal(size=m)*((h2sig2/m)**0.5)
-    gamma=rhoscale*(rng.normal(size=m)*((h2rho/m)**0.5))
+    # print update
+    logger.info('Reading PLINK binary files '+args.bfile+'.bed,.bim,.fam')
+    # get n and M
+    n=CountLines(args.bfile+extFAM)
+    M=CountLines(args.bfile+extBIM)
+    # initialise linear parts of expectations, variances, and correlation
+    xalpha1=np.zeros(n)
+    xalpha2=np.zeros(n)
+    xbeta1=np.zeros(n)
+    xbeta2=np.zeros(n)
+    xgamma=np.zeros(n)
+    # print update
+    logger.info('Number of individuals .fam file:' +str(n))
+    logger.info('Number of SNPs .bim file:' +str(M))
+    # connect to bed, fam, and bim files
+    connbed=open(args.out+extBED,'rb')
+    connbim=open(args.out+extBIM,'r')
+    connfam=open(args.out+extFAM,'r')
+    # check if first three bytes are correct
+    if ord(connbed.read(1))!=(ord(binBED1)) or ord(connbed.read(1))!=(ord(binBED2)) or ord(connbed.read(1))!=(ord(binBED3)):
+        raise ValueError(args.bfile+extBED+' not a valid PLINK .bed file')
+    # calculate how many SNPs can be read in at once
+    Mperb=int(dimg/n)
+    logger.info('Reading in .bim file in blocks of '+str(Mperb)+' SNPs')
+    # count modulo(m,#SNPs per block)
+    MR=M%Mperb
+    # count number of blocks (i.e. complete + remainder block if any)
+    B=int(M/Mperb)+(MR>0)
+    # count number of full bytes per SNP
+    nb=int(n/nperbyte)
+    # compute how many individuals in remainder byte per SNP
+    nr=n%nperbyte
+    # compute total bytes per SNP (full + remainder, if any)
+    nbt=nb+(nr>0)
+    # compute rounded n (i.e. empty including empty bits)
+    roundedn=nbt*nperbyte
+    # get rowid of first two bits per byte being read
+    ids=nperbyte*np.arange(nbt*Mperb)
+    # for each blok
+    for b in tqdm(range(B)):
+        # count number of SNP in this block
+        m=min(M,(b+1)*Mperb)-b*Mperb
+        # calculate how many bytes per read
+        bytesperread=m*nbt
+        # calculate how many distinct genotypes per read
+        gperread=int(nperbyte*bytesperread)
+        # read bytes
+        gbytes=np.frombuffer(connbed.read(bytesperread),dtype=np.uint8)
+        # initialise genotypes for this read as empty
+        g=np.empty(gperread,dtype=np.uint8)
+        # per individual in each byte
+        for i in range(nperbyte):
+            # take difference between what is left of byte after removing 2 bits
+            gbytesleft=gbytes>>2
+            g[ids[0:nbt*m]+i]=gbytes-(gbytesleft*4)
+            # keep part of byte that is left
+            gbytes=gbytesleft
+        # recode
+        if (g==1).sum()>0:
+            raise ValueError('Missing genotypes in PLINK files, which is not permissible in simulation of phenotypes; use e.g. `plink --bfile '+str(args.bfile)+' --geno 0 --make-bed --out '+str(args.bfile)+'2` to obtain PLINK binary dataset without missing values')
+        g[g==2]=1
+        g[g==3]=2
+        # reshape to genotype matrix
+        g=g.reshape((m,roundedn)).T
+        # keep drop fake individuals due to empty parts of last byte
+        g=g[0:n,:]
+        # calculate empirical AFs
+        eaf=g.mean(axis=0)/2
+        # calculate standardised SNPs
+        gs=(g-2*(eaf[None,:]))/(((2*eaf*(1-eaf))**0.5)[None,:])
+        # draw factors for SNP effects on expectations
+        gf1=rng.normal(size=m)
+        gf2=rng.normal(size=m)
+        # draw correlated SNP effects on expectations
+        alpha1=gf1*((args.h2y1/M)**0.5)
+        alpha2=((args.rg*gf1)+(((1-(args.rg**2))**0.5)*gf2))*((args.h2y2/M)**0.5)
+        # draw SNP effects on variances and correlation
+        beta1=rng.normal(size=m)*((args.h2sig1/M)**0.5)
+        beta2=rng.normal(size=m)*((args.h2sig2/M)**0.5)
+        gamma=args.rhoband*(rng.normal(size=m)*((args.h2rho/M)**0.5))
+        # update linear parts
+        xalpha1+=((gs*alpha1[None,:]).sum(axis=1))
+        xalpha2+=((gs*alpha2[None,:]).sum(axis=1))
+        xbeta1+=((gs*beta1[None,:]).sum(axis=1))
+        xbeta2+=((gs*beta2[None,:]).sum(axis=1))
+        xgamma+=((gs*gamma[None,:]).sum(axis=1))
+        '''CONTINUE HERE'''
+        # convert true standardised effects to raw effects, and store
+        paramtrue=np.empty((m,5))
+        paramtrue[:,0]=alpha1/((2*eaf*(1-eaf))**0.5)
+        paramtrue[:,1]=alpha2/((2*eaf*(1-eaf))**0.5)
+        paramtrue[:,2]=beta1/((2*eaf*(1-eaf))**0.5)
+        paramtrue[:,3]=beta2/((2*eaf*(1-eaf))**0.5)
+        paramtrue[:,4]=gamma/((2*eaf*(1-eaf))**0.5)
+        '''CONTINUE HERE'''
+    # close connection bed file
+    connbed.close()
     # draw error terms for sigma and rho
-    esig1=rng.normal(size=n)*((1-h2sig1)**0.5)
-    esig2=rng.normal(size=n)*((1-h2sig2)**0.5)
-    erho=rhoscale*(rng.normal(size=n)*((1-h2rho)**0.5))
+    esig1=rng.normal(size=n)*((1-args.h2sig1)**0.5)
+    esig2=rng.normal(size=n)*((1-args.h2sig2)**0.5)
+    erho=args.rhoband*(rng.normal(size=n)*((1-args.h2rho)**0.5))
     # calculate standard deviations
-    sig1=np.exp(-0.5+esig1+((gs*beta1[None,:]).sum(axis=1)))
-    sig2=np.exp(-0.5+esig2+((gs*beta2[None,:]).sum(axis=1)))
+    sig1=np.exp(-1+esig1+xbeta1)
+    sig2=np.exp(-1+esig2+xbeta2)
     # find intercept for linear part of correlation, such that average
-    # correlation equals rholoc
-    gamma0=np.log((1+rholoc)/(1-rholoc))
-    delta=np.exp(gamma0+erho+((gs*gamma[None,:]).sum(axis=1)))
+    # correlation equals rhomean
+    gamma0=np.log((1+args.rhomean)/(1-args.rhomean))
+    delta=np.exp(gamma0+erho+xgamma)
     rho=(delta-1)/(delta+1)
     # draw noise factors
     eta1=rng.normal(size=n)
     eta2=rng.normal(size=n)
     # scale and mix noise to achieve desired standard deviations and correlations 
-    e1=eta1*sig1*((1-h2y1)**0.5)
-    e2=((rho*eta1)+(((1-(rho**2))**0.5)*eta2))*sig2*((1-h2y2)**0.5)
+    e1=eta1*sig1*((1-args.h2y1)**0.5)
+    e2=((rho*eta1)+(((1-(rho**2))**0.5)*eta2))*sig2*((1-args.h2y2)**0.5)
     # draw outcomes
-    y1=((gs*alpha1[None,:]).sum(axis=1))+e1
-    y2=((gs*alpha2[None,:]).sum(axis=1))+e2
-    # convert true standardised effects to raw effects, and store
-    paramtrue=np.empty((m+1,5))
-    paramtrue[1:,0]=alpha1/((2*eaf*(1-eaf))**0.5)
-    paramtrue[1:,1]=alpha2/((2*eaf*(1-eaf))**0.5)
-    paramtrue[1:,2]=beta1/((2*eaf*(1-eaf))**0.5)
-    paramtrue[1:,3]=beta2/((2*eaf*(1-eaf))**0.5)
-    paramtrue[1:,4]=gamma/((2*eaf*(1-eaf))**0.5)
-    paramtrue[0,:]=-2*((paramtrue[1:,:]*eaf[:,None]).sum(axis=0))
-    paramtrue[0,2]=paramtrue[0,2]+0.5*np.log((1-h2y1))-0.5
-    paramtrue[0,3]=paramtrue[0,3]+0.5*np.log((1-h2y2))-0.5
-    paramtrue[0,4]=paramtrue[0,4]+gamma0
-    # randomly set 0% of data as missing
-    y1[rng.uniform(size=n)<0]=np.nan
-    y2[rng.uniform(size=n)<0]=np.nan
-    # keep only observations for whom at least one trait is observed
+    y1=xalpha1+e1
+    y2=xalpha2+e2
+    ''' and work trough this:
+    keep only observations for whom at least one trait is observed
     atleast1=~(np.isnan(y1)*np.isnan(y2))
     y1=y1[atleast1]
     y2=y2[atleast1]
@@ -480,6 +541,7 @@ def SimulateY():
     ks=1
     # recalculate empirical AFs
     eaf=g.mean(axis=0)/2
+    '''
 
 def sec_to_str(t):
     [d,h,m,s,n]=reduce(lambda ll, b : divmod(ll[0], b) + ll[1:], [(t, 1), 60, 60, 24])
@@ -729,8 +791,8 @@ def main():
         if simulg:
             SimulateG()
         # Simulate phenotypes if necessary
-        #if simuly:
-        #    SimulateY()
+        if simuly:
+            SimulateY()
         # Perform GCAT
         #GCAT()
     except Exception:
