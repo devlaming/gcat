@@ -10,7 +10,7 @@ from tqdm import tqdm
 from scipy import stats
 from functools import reduce
 
-# define constants and output header
+# define constants
 MAXITER=50
 TOL=1E-12
 TAUTRUEMAF=0.05
@@ -39,6 +39,7 @@ extPHE='.phe'
 extEST='.est'
 extFRQ='.frq'
 
+# define text for welcom screen
 __version__ = 'v0.1'
 HEADER = "\n"
 HEADER += "------------------------------------------------------------\n"
@@ -78,7 +79,7 @@ def CalcLogL(param,logLonly=False):
     # calculate errors 
     e1=y1-(xs*param[None,:,0]).sum(axis=1)
     e2=y2-(xs*param[None,:,1]).sum(axis=1)
-    # set rho and errors to zero and delta to one at missing points
+    # at missing points, set rho and errors to zero, and set delta to one
     rho[~ybothnotnan]=0
     e1[~y1notnan]=0
     e2[~y2notnan]=0
@@ -181,7 +182,7 @@ def Newton(param,silent=False):
             i+=1
             # print update if not silent
             if not(silent):
-                print('Newton iteration '+str(i)+': logL='+str(logL)+'; '\
+                logger.info('Newton iteration '+str(i)+': logL='+str(logL)+'; '\
                       +str(j)+' line-search steps')
     return param,logL,grad,H,G,converged
 
@@ -218,16 +219,16 @@ def GoldenSection(param1,update):
 def InitialiseParams():
     x1=x[y1notnan,:]
     x2=x[y2notnan,:]
-    invXTX1=np.linalg.inv((x1.T@x1)/n)
-    invXTX2=np.linalg.inv((x2.T@x2)/n)
-    a1=invXTX1@((x1.T@y1[y1notnan])/n)
-    a2=invXTX2@((x2.T@y2[y2notnan])/n)
+    invXTX1=np.linalg.inv((x1.T@x1)/n1)
+    invXTX2=np.linalg.inv((x2.T@x2)/n2)
+    a1=invXTX1@((x1.T@y1[y1notnan])/n1)
+    a2=invXTX2@((x2.T@y2[y2notnan])/n2)
     e1=y1-x@a1
     e2=y2-x@a2
     z1=0.5*np.log(e1**2)
     z2=0.5*np.log(e2**2)
-    b1=invXTX1@((x1.T@z1[y1notnan])/n)
-    b2=invXTX2@((x2.T@z2[y2notnan])/n)
+    b1=invXTX1@((x1.T@z1[y1notnan])/n1)
+    b2=invXTX2@((x2.T@z2[y2notnan])/n2)
     r1=e1/np.exp(x@b1)
     r2=e2/np.exp(x@b2)
     rhomean=(np.corrcoef(r1[ybothnotnan],r2[ybothnotnan]))[0,1]
@@ -237,33 +238,140 @@ def InitialiseParams():
     return param0
 
 def GCAT():
-    # consider globals for xs and ks
-    global xs,ks
-    print('2. ESTIMATION MODEL WITHOUT SNPS')
-    print('Initialising parameters')
+    # define globals
+    global y1,y2,x,xs,n,nboth,n1,n2,N,k,ks,ybothnotnan,y1notnan,y2notnan
+    # print updates
+    logger.info('Reading data')
+    # count number of SNPs from bim
+    M=CountLines(args.bfile+extBIM)
+    logger.info('Found data on '+str(M)+ ' SNPs in '+args.bfile+extBIM)
+    # read fam
+    famdata=pd.read_csv(args.bfile+extFAM,sep='\t',header=None,names=['FID','IID','PID','MID','SEX','PHE'])
+    nG=famdata.shape[0]
+    logger.info('Found data on '+str(nG)+' individuals in '+args.bfile+extFAM)
+    # retain only FID and IID of fam data
+    DATA=famdata.iloc[:,[0,1]]
+    # read pheno file
+    ydata=pd.read_csv(args.pheno,sep='\t')
+    # check two phenotypes in phenotype data
+    if ydata.shape[1]!=4:
+        raise ValueError(args.pheno+' does not contain exactly two phenotypes')
+    logger.info('Found data on '+str(ydata.shape[0])+' individuals and two traits, labelled '\
+                 +ydata.columns[2]+' and '+ydata.columns[3]+', in '+args.pheno)
+    # left join FID,IID from fam with pheno data
+    DATA=pd.merge(left=DATA,right=ydata,how='left',left_on=['FID','IID'],right_on=['FID','IID'])
+    # retrieve matched phenotypes
+    y1=DATA.values[:,2]
+    y2=DATA.values[:,3]
+    # if covars provideded
+    if covars:
+        # read covars
+        xdata=pd.read_csv(args.covar,sep='\t')
+        # check if at least one covariate
+        if xdata.shape[1]<3:
+            raise ValueError(args.covar+' does not contain data on any covariates')
+        logger.info('Found data on '+str(xdata.shape[0])+' individuals and '\
+                     +str(xdata.shape[1]-2)+' control variables in '+args.covar)
+        # left joint data with covariates
+        DATA=pd.merge(left=DATA,right=xdata,how='left',left_on=['FID','IID'],right_on=['FID','IID'])
+        # retrieve matched covariates data, and add intercept
+        x=DATA.values[:,5:]
+        x=np.hstack((np.ones((x.shape[0],1)),x))
+    else: # else set covars as intercept only
+        x=np.ones((DATA.shape[0],1))
+    # find observations where at least one covariate is missing
+    xmissing=np.isnan(x.sum(axis=1))
+    # set x,y1,y2 to missing for rows where any covariate is missing
+    x[xmissing,:]=np.nan
+    y1[xmissing]=np.nan
+    y2[xmissing]=np.nan
+    # find indices of non missing observations
+    y1notnan=~np.isnan(y1)
+    y2notnan=~np.isnan(y2)
+    # count number of complete observations per trait
+    n1=y1notnan.sum()
+    n2=y2notnan.sum()
+    # report stats
+    logger.info('Found '+str(n1)+' observations for '+ydata.columns[2]+' with complete data (i.e. in PLINK files, and with all covariates, if any, nonmissing)')
+    logger.info('Found '+str(n2)+' observations for '+ydata.columns[3]+' with complete data') 
+    # find total number of observation in multivariate model
+    N=n1+n2
+    # find individuals with complete data for x, y1, y2, and that can be matched to genotypes
+    ybothnotnan=y1notnan&y2notnan
+    nboth=ybothnotnan.sum()
+    # find individuals with either y1 or y2 complete: count of that = no. of independent observations!
+    y1ory2notnan=y1notnan|y2notnan
+    n=y1ory2notnan.sum()
+    # make copy of baseline regressors (to which SNPs will be added, one by one)
+    xs=x.copy()
+    # count number of regressors
+    k=x.shape[1]
+    ks=k
+    # initialise parameters baseline model
+    logger.info('Initialising baseline model (i.e. without any SNPs)')
     param0=InitialiseParams()
-    (param0,logL0,grad0,H0,G0,converged0)=Newton(param0)
+    # estimate baseline model
+    logger.info('Estimating baseline model')
+    (param0,_,_,_,_,converged0)=Newton(param0)
+    # if baseline model did not converge: throw error
     if not(converged0):
         raise RuntimeError('Estimates baseline model (=no SNPs) not converged')
-    invH0=np.linalg.inv(H0.reshape((k*5,k*5)))
-    GGT0=(G0.reshape((k*5,n)))@((G0.reshape((k*5,n))).T)
-    param0Var=invH0@GGT0@invH0
-    param0SE=((np.diag(param0Var))**0.5).reshape((k,5))
-    print('3. ESTIMATION MODELS WITH SNPS')
-    snp=np.empty((m,5))*np.nan
-    snpSE=np.empty((m,5))*np.nan
-    snpLRT=np.empty((m))*np.nan
-    snpAPEsig1=np.empty(m)*np.nan
-    snpAPEsig1SE=np.empty(m)*np.nan
-    snpAPEsig2=np.empty(m)*np.nan
-    snpAPEsig2SE=np.empty(m)*np.nan
-    snpAPErho=np.empty(m)*np.nan
-    snpAPErhoSE=np.empty(m)*np.nan
-    for j in tqdm(range(m)):
+        # count number of full bytes per SNP
+    # count number of full bytes per SNP
+    nb=int(nG/nperbyte)
+    # compute how many individuals in remainder byte per SNP
+    nr=nG%nperbyte
+    # compute total bytes per SNP (full + remainder, if any)
+    nbt=nb+(nr>0)
+    # compute expected number of bytes in .bed file: 3 magic bytes + data
+    expectedbytes=3+nbt*M
+    # get observed number of bytes in .bed file
+    observedbytes=(os.stat(args.bfile+extBED)).st_size
+    # throw error if mismatch
+    if observedbytes>expectedbytes:
+        raise ValueError('More bytes in '+args.bfile+extBED+' than expected. File corrupted?')
+    elif observedbytes<expectedbytes:
+        raise ValueError('Fewer bytes in '+args.bfile+extBED+' than expected. File corrupted?')
+    # compute rounded n (i.e. empty including empty bits)
+    roundedn=nbt*nperbyte
+    # get rowid of first two bits per byte being read
+    ids=nperbyte*np.arange(nbt)
+    # connect to read bed and bim files
+    connbed=open(args.bfile+extBED,'rb')
+    connbim=open(args.bfile+extBIM,'r')
+    # check if first three bytes bed file are correct
+    if ord(connbed.read(1))!=(ord(binBED1)) or ord(connbed.read(1))!=(ord(binBED2)) or ord(connbed.read(1))!=(ord(binBED3)):
+        raise ValueError(args.bfile+extBED+' not a valid PLINK .bed file')
+    # for each SNP
+    for j in tqdm(range(M)):
+        # read bytes
+        gbytes=np.frombuffer(connbed.read(nbt),dtype=np.uint8)
+        # initialise genotypes for this read as empty
+        g=np.empty(roundedn,dtype=np.uint8)
+        # per individual in each byte
+        for i in range(nperbyte):
+            # take difference between what is left of byte after removing 2 bits
+            gbytesleft=gbytes>>2
+            g[ids[0:nbt]+i]=gbytes-(gbytesleft<<2)
+            # keep part of byte that is left
+            gbytes=gbytesleft
+        # cast genotypes to float
+        g=g.astype(dtype=np.float64)
+        # recode genotype, where 0=homozygote A1, 1=heterozygote, 2=homozygote A2; np.nan=missing
+        g[g==1]=np.nan
+        g[g==2]=1
+        g[g==3]=2
+        # drop rows corresponding to empty bits of last byte for each SNP
+        g=g[0:nG]
+        # initialise SNP effects at zero
         param1=np.vstack((param0.copy(),np.zeros((1,5))))
-        xs=np.hstack((x,g[:,j][:,None]))
+        # at SNP to matrix of regressors
+        xs=np.hstack((x,g[:,None]))
         ks=k+1
+        # apply Newton's method
         (param1,logL1,grad1,H1,G1,converged1)=Newton(param1,silent=True)
+        ''' CONTINUE HERE, AND FIND WAY TO DEAL WITH MISSING GENOTYPES: y1notnan, y2notnan, ybothnotnan fail!
+        DO SAME AS WHAT WE DID FOR xs versus x?
         if converged1:
             invH1=np.linalg.inv(H1.reshape((ks*5,ks*5)))
             GGT1=(G1.reshape((ks*5,n)))@((G1.reshape((ks*5,n))).T)
@@ -299,6 +407,7 @@ def GCAT():
     return param0,param0SE,snp,snpSE,snpWald,snpPWald,snpLRT,snpPLRT\
         ,snpAPEsig1,snpAPEsig1SE,snpAPEsig2,snpAPEsig2SE\
             ,snpAPErho,snpAPErhoSE
+        '''
 
 def SimulateG():
     # get n and M
@@ -326,8 +435,8 @@ def SimulateG():
     # open connection for writing frequency file
     connfrq=open(args.out+extFRQ,'w')
     connfrq.write('CHR\tSNP\tA1\tA2\tAF1\tAF2\n')
-    # found number of SNPs per block
-    Mperb=int(dimg/n)
+    # calculate how many SNPs can be simulated at once (at least 1)
+    Mperb=max(int(dimg/n),1)
     logger.info('Simulating SNPs and writing .bim file in blocks of '+str(Mperb)+' SNPs')
     # count modulo(m,#SNPs per block)
     MR=M%Mperb
@@ -422,8 +531,8 @@ def SimulateY():
     # print update
     logger.info('Number of individuals in '+args.bfile+extFAM+': n=' +str(n))
     logger.info('Number of SNPs in '+args.bfile+extBIM+': m='+str(M))
-    # calculate how many SNPs can be read in at once
-    Mperb=int(dimg/n)
+    # calculate how many SNPs can be read at once (at least 1)
+    Mperb=max(int(dimg/n),1)
     # count modulo(m,#SNPs per block)
     MR=M%Mperb
     # count number of blocks (i.e. complete + remainder block if any)
@@ -450,14 +559,14 @@ def SimulateY():
     # connect to read bed and bim files
     connbed=open(args.bfile+extBED,'rb')
     connbim=open(args.bfile+extBIM,'r')
+    # check if first three bytes bed file are correct
+    if ord(connbed.read(1))!=(ord(binBED1)) or ord(connbed.read(1))!=(ord(binBED2)) or ord(connbed.read(1))!=(ord(binBED3)):
+        raise ValueError(args.bfile+extBED+' not a valid PLINK .bed file')
     # connect to write effect file
     conneff=open(args.out+extEFF,'w')
     # print header row to effect file
     conneff.write('CHROMOSOME\tSNP_ID\tBASELINE_ALLELE\tEFFECT_ALLELE\tEFFECT_E[Y1]\tEFFECT_E[Y2]\tEFFECT_VAR(Y1)\tEFFECT_VAR(Y2)\tEFFECT_CORR(Y1,Y2)\n')
-    logger.info('Reading in .bim file in blocks of '+str(Mperb)+' SNPs')
-    # check if first three bytes are correct
-    if ord(connbed.read(1))!=(ord(binBED1)) or ord(connbed.read(1))!=(ord(binBED2)) or ord(connbed.read(1))!=(ord(binBED3)):
-        raise ValueError(args.bfile+extBED+' not a valid PLINK .bed file')
+    logger.info('Reading in '+args.bfile+extBED+' in blocks of '+str(Mperb)+' SNPs')
     # for each blok
     for b in tqdm(range(B)):
         # count number of SNP in this block
@@ -557,29 +666,8 @@ def SimulateY():
     famdata=pd.read_csv(args.bfile+extFAM,sep='\t',header=None,names=['FID','IID','PID','MID','SEX','PHE'])
     # concatenate FID,IID,Y1,Y2, and write to csv
     pd.concat([famdata.iloc[:,[0,1]],ydata],axis=1).to_csv(args.out+extPHE,index=False,sep='\t')
-    ''' and work trough this:
-    keep only observations for whom at least one trait is observed
-    atleast1=~(np.isnan(y1)*np.isnan(y2))
-    y1=y1[atleast1]
-    y2=y2[atleast1]
-    g=g[atleast1,:]
-    n=atleast1.sum()
-    # find indices of non missing observations
-    y1notnan=~np.isnan(y1)
-    y2notnan=~np.isnan(y2)
-    # find total number of observation in multivariate model
-    N=(y1notnan.sum())+(y2notnan.sum())
-    # find individuals with complete data
-    ybothnotnan=y1notnan*y2notnan
-    nboth=ybothnotnan.sum()
-    # set intercept as baseline model regressor
-    x=np.ones((n,1))
-    xs=x.copy()
-    k=1
-    ks=1
-    # recalculate empirical AFs
-    eaf=g.mean(axis=0)/2
-    '''
+    # store name of just generated phenotype file
+    args.pheno=args.out+extPHE
 
 def sec_to_str(t):
     [d,h,m,s,n]=reduce(lambda ll, b : divmod(ll[0], b) + ll[1:], [(t, 1), 60, 60, 24])
@@ -714,6 +802,8 @@ def ShowWelcome():
 
 def CheckInputArgs():
     global simulg, simuly, covars
+    # set covars to False by default, change if needed based on input
+    covars=False
     if args.bfile is not None and (args.n is not None or args.m is not None):
         raise SyntaxError('you cannot combine --bfile with --n and/or --m')
     if args.n is not None and args.m is None:
@@ -749,9 +839,7 @@ def CheckInputArgs():
             simuly=False
             if not(os.path.isfile(args.pheno)):
                 raise OSError('Phenotype file '+args.pheno+ ' cannot be found')
-            if args.covar is None:
-                covars=False
-            else:
+            if args.covar is not None:
                 covars=True
                 if not(os.path.isfile(args.covar)):
                     raise OSError('Covariate file '+args.covar+ ' cannot be found')
@@ -831,12 +919,15 @@ def main():
         FindBlockSize()
         # Simulate genotypes if necessary
         if simulg:
+            logger.info('\nSIMULATING GENOTYPES')
             SimulateG()
         # Simulate phenotypes if necessary
         if simuly:
+            logger.info('\nSIMULATING PHENOTYPES')
             SimulateY()
         # Perform GCAT if args.simul_only is False
         if not(args.simul_only):
+            logger.info('\nPERFORMING GCAT')
             GCAT()
     except Exception:
         # print the traceback
