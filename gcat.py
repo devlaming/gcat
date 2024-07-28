@@ -5,6 +5,7 @@ import traceback
 import os, psutil
 import numpy as np
 import mmap
+import pandas as pd
 from tqdm import tqdm
 from scipy import stats
 from functools import reduce
@@ -446,12 +447,13 @@ def SimulateY():
     roundedn=nbt*nperbyte
     # get rowid of first two bits per byte being read
     ids=nperbyte*np.arange(nbt*Mperb)
-    # connect to read bed, fam, and bim files
+    # connect to read bed and bim files
     connbed=open(args.bfile+extBED,'rb')
     connbim=open(args.bfile+extBIM,'r')
-    connfam=open(args.bfile+extFAM,'r')
-    # connect to write effect files
+    # connect to write effect file
     conneff=open(args.out+extEFF,'w')
+    # print header row to effect file
+    conneff.write('CHROMOSOME\tSNP_ID\tBASELINE_ALLELE\tEFFECT_ALLELE\tEFFECT_E[Y1]\tEFFECT_E[Y2]\tEFFECT_VAR(Y1)\tEFFECT_VAR(Y2)\tEFFECT_CORR(Y1,Y2)\n')
     logger.info('Reading in .bim file in blocks of '+str(Mperb)+' SNPs')
     # check if first three bytes are correct
     if ord(connbed.read(1))!=(ord(binBED1)) or ord(connbed.read(1))!=(ord(binBED2)) or ord(connbed.read(1))!=(ord(binBED3)):
@@ -505,19 +507,29 @@ def SimulateY():
         xbeta1+=((gs*beta1[None,:]).sum(axis=1))
         xbeta2+=((gs*beta2[None,:]).sum(axis=1))
         xgamma+=((gs*gamma[None,:]).sum(axis=1))
-        '''CONTINUE HERE'''
-        # convert true standardised effects to raw effects, and store
-        paramtrue=np.empty((m,5))
-        paramtrue[:,0]=alpha1/((2*eaf*(1-eaf))**0.5)
-        paramtrue[:,1]=alpha2/((2*eaf*(1-eaf))**0.5)
-        paramtrue[:,2]=beta1/((2*eaf*(1-eaf))**0.5)
-        paramtrue[:,3]=beta2/((2*eaf*(1-eaf))**0.5)
-        paramtrue[:,4]=gamma/((2*eaf*(1-eaf))**0.5)
-        '''CONTINUE HERE'''
-    # close connection bed, bim, fam, eff file
+        # rescaling standardised coefficient to raw genotype effects
+        scale=1/((2*eaf*(1-eaf))**0.5)
+        alpha1=alpha1*scale
+        alpha2=alpha2*scale
+        beta1=beta1*scale
+        beta2=beta2*scale
+        gamma=gamma*scale
+        # for each SNP in this block
+        for j in range(m):
+            # read line from bim file, strip trailing newline, split by tabs
+            snpline=connbim.readline().rstrip('\n').split('\t')
+            # get chromosome number, snp ID, baseline allele, and effect allele
+            snpchr=snpline[0]
+            snpid=snpline[1]
+            snpbaseallele=snpline[4]
+            snpeffallele=snpline[5]
+            # print to .eff file the SNP info (above) and corresponding effects
+            conneff.write(snpchr+'\t'+snpid+'\t'+snpbaseallele+'\t'\
+                          +snpeffallele+'\t'+str(alpha1[j])+'\t'+str(alpha2[j])\
+                          +'\t'+str(beta1[j])+'\t'+str(beta2[j])+'\t'+str(gamma[j])+'\n')
+    # close connection bed, bim, eff file
     connbed.close()
     connbim.close()
-    connfam.close()
     conneff.close()
     # draw error terms for sigma and rho
     esig1=rng.normal(size=n)*((1-args.h2sig1)**0.5)
@@ -537,9 +549,14 @@ def SimulateY():
     # scale and mix noise to achieve desired standard deviations and correlations 
     e1=eta1*sig1*((1-args.h2y1)**0.5)
     e2=((rho*eta1)+(((1-(rho**2))**0.5)*eta2))*sig2*((1-args.h2y2)**0.5)
-    # draw outcomes
+    # draw outcomes and store in dataframe
     y1=xalpha1+e1
     y2=xalpha2+e2
+    ydata=pd.DataFrame(np.hstack((y1[:,None],y2[:,None])),columns=['Y1','Y2'])
+    # read fam file to dataframe
+    famdata=pd.read_csv(args.bfile+extFAM,sep='\t',header=None,names=['FID','IID','PID','MID','SEX','PHE'])
+    # concatenate FID,IID,Y1,Y2, and write to csv
+    pd.concat([famdata.iloc[:,[0,1]],ydata],axis=1).to_csv(args.out+extPHE,index=False,sep='\t')
     ''' and work trough this:
     keep only observations for whom at least one trait is observed
     atleast1=~(np.isnan(y1)*np.isnan(y2))
@@ -818,8 +835,9 @@ def main():
         # Simulate phenotypes if necessary
         if simuly:
             SimulateY()
-        # Perform GCAT
-        #GCAT()
+        # Perform GCAT if args.simul_only is False
+        if not(args.simul_only):
+            GCAT()
     except Exception:
         # print the traceback
         logger.error(traceback.format_exc())
