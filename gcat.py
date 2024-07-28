@@ -25,12 +25,19 @@ thetainv=2/(1+5**0.5)
 extBED='.bed'
 extBIM='.bim'
 extFAM='.fam'
-extFRQ='.frq'
 binBED1=bytes([0b01101100])
 binBED2=bytes([0b00011011])
 binBED3=bytes([0b00000001])
 nperbyte=4
 lAlleles=['A','C','G','T']
+
+# define other extensions and prefixes
+outDEFAULT='output'
+extLOG='.log'
+extEFF='.eff'
+extPHE='.phe'
+extEST='.est'
+extFRQ='.frq'
 
 __version__ = 'v0.1'
 HEADER = "\n"
@@ -299,8 +306,8 @@ def SimulateG():
     M=args.m
     # give update
     logger.info('Simulating data on '+str(M)+' SNPs for '+str(n)+' individuals,')
-    logger.info('exporting to PLINK binary files '+args.out+'.bed,.bim,.fam,')
-    logger.info('and writing allele frequencies to '+args.out+'.frq')
+    logger.info('exporting to PLINK binary files '+args.out+extBED+','+extBIM+','+extFAM)
+    logger.info('and writing allele frequencies to '+args.out+extFRQ)
     # set FIDs/IIDs as numbers from 1 to n, set PID and MID to zeroes,
     # set sex (=1 or 2) as random draw, set phenotype as missing
     FAM=np.zeros((n,6))
@@ -402,7 +409,7 @@ def CountLines(filename):
 
 def SimulateY():
     # print update
-    logger.info('Reading PLINK binary files '+args.bfile+'.bed,.bim,.fam')
+    logger.info('Reading PLINK binary files '+args.bfile+extBED+','+extBIM+','+extFAM)
     # get n and M
     n=CountLines(args.bfile+extFAM)
     M=CountLines(args.bfile+extBIM)
@@ -413,18 +420,10 @@ def SimulateY():
     xbeta2=np.zeros(n)
     xgamma=np.zeros(n)
     # print update
-    logger.info('Number of individuals .fam file:' +str(n))
-    logger.info('Number of SNPs .bim file:' +str(M))
-    # connect to bed, fam, and bim files
-    connbed=open(args.out+extBED,'rb')
-    connbim=open(args.out+extBIM,'r')
-    connfam=open(args.out+extFAM,'r')
-    # check if first three bytes are correct
-    if ord(connbed.read(1))!=(ord(binBED1)) or ord(connbed.read(1))!=(ord(binBED2)) or ord(connbed.read(1))!=(ord(binBED3)):
-        raise ValueError(args.bfile+extBED+' not a valid PLINK .bed file')
+    logger.info('Number of individuals in '+args.bfile+extFAM+': n=' +str(n))
+    logger.info('Number of SNPs in '+args.bfile+extBIM+': m='+str(M))
     # calculate how many SNPs can be read in at once
     Mperb=int(dimg/n)
-    logger.info('Reading in .bim file in blocks of '+str(Mperb)+' SNPs')
     # count modulo(m,#SNPs per block)
     MR=M%Mperb
     # count number of blocks (i.e. complete + remainder block if any)
@@ -435,10 +434,29 @@ def SimulateY():
     nr=n%nperbyte
     # compute total bytes per SNP (full + remainder, if any)
     nbt=nb+(nr>0)
+    # compute expected number of bytes in .bed file: 3 magic bytes + data
+    expectedbytes=3+nbt*M
+    # get observed number of bytes in .bed file
+    observedbytes=(os.stat(args.bfile+extBED)).st_size
+    # throw error if mismatch
+    if observedbytes>expectedbytes:
+        raise ValueError('More bytes in '+args.bfile+extBED+' than expected. File corrupted?')
+    elif observedbytes<expectedbytes:
+        raise ValueError('Fewer bytes in '+args.bfile+extBED+' than expected. File corrupted?')
     # compute rounded n (i.e. empty including empty bits)
     roundedn=nbt*nperbyte
     # get rowid of first two bits per byte being read
     ids=nperbyte*np.arange(nbt*Mperb)
+    # connect to read bed, fam, and bim files
+    connbed=open(args.bfile+extBED,'rb')
+    connbim=open(args.bfile+extBIM,'r')
+    connfam=open(args.bfile+extFAM,'r')
+    # connect to write effect files
+    conneff=open(args.out+extEFF,'w')
+    logger.info('Reading in .bim file in blocks of '+str(Mperb)+' SNPs')
+    # check if first three bytes are correct
+    if ord(connbed.read(1))!=(ord(binBED1)) or ord(connbed.read(1))!=(ord(binBED2)) or ord(connbed.read(1))!=(ord(binBED3)):
+        raise ValueError(args.bfile+extBED+' not a valid PLINK .bed file')
     # for each blok
     for b in tqdm(range(B)):
         # count number of SNP in this block
@@ -455,17 +473,18 @@ def SimulateY():
         for i in range(nperbyte):
             # take difference between what is left of byte after removing 2 bits
             gbytesleft=gbytes>>2
-            g[ids[0:nbt*m]+i]=gbytes-(gbytesleft*4)
+            g[ids[0:nbt*m]+i]=gbytes-(gbytesleft<<2)
             # keep part of byte that is left
             gbytes=gbytesleft
-        # recode
+        # throw error if a genotype is missing; users should address this before simulation
         if (g==1).sum()>0:
             raise ValueError('Missing genotypes in PLINK files, which is not permissible in simulation of phenotypes; use e.g. `plink --bfile '+str(args.bfile)+' --geno 0 --make-bed --out '+str(args.bfile)+'2` to obtain PLINK binary dataset without missing values')
+        # recode genotype where 0=homozygote A1, 1=heterozygote, 2=homozygote A2
         g[g==2]=1
         g[g==3]=2
         # reshape to genotype matrix
         g=g.reshape((m,roundedn)).T
-        # keep drop fake individuals due to empty parts of last byte
+        # drop rows corresponding to empty bits of last byte for each SNP
         g=g[0:n,:]
         # calculate empirical AFs
         eaf=g.mean(axis=0)/2
@@ -496,8 +515,11 @@ def SimulateY():
         paramtrue[:,3]=beta2/((2*eaf*(1-eaf))**0.5)
         paramtrue[:,4]=gamma/((2*eaf*(1-eaf))**0.5)
         '''CONTINUE HERE'''
-    # close connection bed file
+    # close connection bed, bim, fam, eff file
     connbed.close()
+    connbim.close()
+    connfam.close()
+    conneff.close()
     # draw error terms for sigma and rho
     esig1=rng.normal(size=n)*((1-args.h2sig1)**0.5)
     esig2=rng.normal(size=n)*((1-args.h2sig2)**0.5)
@@ -636,14 +658,12 @@ def InitialiseLogger():
         if not(sDir == '') and not(os.path.isdir(sDir)):
             # if so, raise an error
             raise ValueError('prefix specified using --out may start with a directory name; this directory must exist however. ' + sDir + ' is not a directory')
-        out=args.out
+        # set up log file handler with using provided output prefix
+        f_handler=logging.FileHandler(args.out+extLOG,'w+',encoding="utf-8")
     else:
-        out='output'
-    # store prefix and output file for log
-    prefix=out+'.'
-    fileout=prefix+'log'
-    # set the name for the log file
-    f_handler=logging.FileHandler(fileout,'w+',encoding="utf-8")
+        # set up log file handler with using default output prefix
+        f_handler=logging.FileHandler(outDEFAULT+extLOG,'w+',encoding="utf-8")
+    # finish configuration logger
     c_handler.setLevel(logging.DEBUG)
     f_handler.setLevel(logging.DEBUG)
     logger.setLevel(logging.DEBUG)
@@ -669,6 +689,8 @@ def ShowWelcome():
         header += '\n'.join(options).replace('True','').replace('False','').replace("', \'", ' ').replace("']", '').replace("['", '').replace('[', '').replace(']', '').replace(', ', ' ').replace('  ', ' ')
         header = header[0:-1]+'\n'
         logger.info(header)
+        if args.out is None:
+            args.out=outDEFAULT
     except Exception:
         raise SyntaxError('you specified incorrect input options')
 
@@ -695,12 +717,12 @@ def CheckInputArgs():
             raise SyntaxError('--covar cannot be combined with --n and --m')
     else:
         simulg=False
-        if not(os.path.isfile(args.bfile+'.bed')):
-            raise OSError('PLINK binary data file '+args.bfile+'.bed cannot be found')
-        if not(os.path.isfile(args.bfile+'.bim')):
-            raise OSError('PLINK binary data file '+args.bfile+'.bim cannot be found')
-        if not(os.path.isfile(args.bfile+'.fam')):
-            raise OSError('PLINK binary data file '+args.bfile+'.fam cannot be found')
+        if not(os.path.isfile(args.bfile+extBED)):
+            raise OSError('PLINK binary data file '+args.bfile+extBED+' cannot be found')
+        if not(os.path.isfile(args.bfile+extBIM)):
+            raise OSError('PLINK binary data file '+args.bfile+extBIM+' cannot be found')
+        if not(os.path.isfile(args.bfile+extFAM)):
+            raise OSError('PLINK binary data file '+args.bfile+extFAM+' cannot be found')
         if args.pheno is None:
             simuly=True
             if args.covar is not None:
