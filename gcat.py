@@ -4,7 +4,6 @@ import time
 import traceback
 import os, psutil
 import numpy as np
-import warnings
 import mmap
 from tqdm import tqdm
 from scipy import stats
@@ -292,7 +291,7 @@ def GCAT():
             snpSE[j,:]=param1SE[-1,:]
             snpLRT[j]=2*n*(logL1-logL0)
         else:
-            warnings.warn('Model for SNP '+str(j)+' did not converge')
+            logger.warning('Model for SNP '+str(j)+' did not converge')
     snpWald=(snp/snpSE)**2
     snpPWald=1-stats.chi2.cdf(snpWald,1)
     snpPLRT=1-stats.chi2.cdf(snpLRT,5)
@@ -638,7 +637,9 @@ def ParseInputArguments():
     parser.add_argument('--pheno', metavar = 'FILENAME', default = None, type = str,
                     help = 'name of phenotype file: should be comma-, space-, or tab-separated, with one row per individual, with FID and IID as first two fields, followed by two fields for phenotypes Y1 and Y2; first row must contain labels (e.g. FID IID HEIGHT log(BMI)); requires --bfile to be specified; cannot be combined with --h2y1, --h2y2, --rg, --h2sig1, --h2sig2, --h2rho, --rhomean, --rhoband, and/or --seed')
     parser.add_argument('--covar', metavar = 'FILENAME', default = None, type = str,
-                    help = 'name of covariate file: should be comma-, space-, or tab-separated, with one row per individual, with FID and IID as first two fields, followed by a field per covariate; first row must contain labels (e.g. FID IID AGE AGESQ PC1 PC2 PC3 PC4 PC5); requires --bfile and --pheno to be specified; cannot be combined with --h2y1, --h2y2, --rg, --h2sig1, --h2sig2, --h2rho, --rhomean --rhoband, and/or --seed; WARNING: do not include an intercept in your covariate file, because GCAT always adds an intercept itself')
+                    help = 'name of covariate file: should be comma-, space-, or tab-separated, with one row per individual, with FID and IID as first two fields, followed by a field per covariate; first row must contain labels (e.g. FID IID AGE AGESQ PC1 PC2 PC3 PC4 PC5); requires --bfile and --pheno to be specified; WARNING: do not include an intercept in your covariate file, because GCAT always adds an intercept itself')
+    parser.add_argument('--simul-only', action = 'store_true',
+                    help = 'option to simulate data only (i.e. no analysis of simulated data); cannot be combined with --pheno')
     parser.add_argument('--out', metavar = 'PREFIX', default = None, type = str,
                     help = 'prefix of output files')
     try:
@@ -695,7 +696,7 @@ def ShowWelcome():
         raise SyntaxError('you specified incorrect input options')
 
 def CheckInputArgs():
-    global simulg, simuly
+    global simulg, simuly, covars
     if args.bfile is not None and (args.n is not None or args.m is not None):
         raise SyntaxError('you cannot combine --bfile with --n and/or --m')
     if args.n is not None and args.m is None:
@@ -737,6 +738,8 @@ def CheckInputArgs():
                 covars=True
                 if not(os.path.isfile(args.covar)):
                     raise OSError('Covariate file '+args.covar+ ' cannot be found')
+            if args.simul_only:
+                raise SyntaxError('--simul-only cannot be combined with --pheno')
     if simuly:
         if args.h2y1 is None:
             raise SyntaxError('--h2y1 must be specified when simulating phenotypes')
