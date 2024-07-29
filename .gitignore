@@ -5,10 +5,10 @@
 *.fam
 *.phe
 *.cov
-*.est
 *.frq
-*.eff
 *.exe
+*.txt
+*.assoc
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
