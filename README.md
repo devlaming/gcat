@@ -18,7 +18,7 @@ Now, enter the newly created `gcat` directory using:
 cd gcat
 ```
 
-Then run the following commands to create a custom Python environment which has all of `gcat`'s dependencies (i.e. an environment that has e.g. the packages `numpy` and `tqdm` pre-installed):
+Then run the following commands to create a custom Python environment which has all of `gcat`'s dependencies (i.e. all packages it needs):
 
 ```
 conda env create --file gcat.yml
