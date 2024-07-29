@@ -31,7 +31,7 @@ In case you cannot create a customised conda environment (e.g. because of insuff
 
 ## Tutorial
 
-To simulate both genotype and phenotype data, for 1000 SNPs and 50,000 individuals, and applying `gcat` to that data, try the following line of code:
+To simulate both genotype and phenotype data, for 100 SNPs and 50000 individuals, and applying `gcat` to that data, try the following line of code:
 
 ```
 python ./gcat.py --n 5000 --m 100 --h2y1 0.3 --h2y2 0.4 --rg 0.5 --h2sig1 0.25 --h2sig2 0.5 --h2rho 0.75 --rhomean 0 --rhoband 0.5 --seed 123456789 --out simulation
