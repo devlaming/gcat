@@ -90,7 +90,7 @@ In case you have a question that is not resolved by going over the preceding two
 
 ## Citation
 
-If you use the software, please cite the manuscript in which `gcat` was first described and utilised:
+If you use the software, please cite the following papers:
 
 *tba*
 
