@@ -27,7 +27,7 @@ conda activate gcat
 
 (or `activate gcat` instead of `conda activate gcat` on some machines).
 
-In case you cannot create a customised conda environment (e.g. because of insufficient user rights) or simply prefer to use Anaconda Navigator or `pip` to install packages e.g. in your base environment rather than a custom environment, please note that `gcat` only requires Python 3.x with the packages *tba* installed.
+In case you cannot create a customised conda environment (e.g. because of insufficient user rights) or simply prefer to use Anaconda Navigator or `pip` to install packages e.g. in your base environment rather than a custom environment, please notice that `gcat` only requires Python 3.x with the packages `numpy`, `pandas`, `psutil`, `scipy`, and `tqdm` installed.
 
 ## Tutorial
 
@@ -64,7 +64,7 @@ remote: Counting objects: 100% (8/8), done.
 remote: Compressing objects: 100% (4/4), done.
 remote: Total 6 (delta 2), reused 6 (delta 2), pack-reused 0
 Unpacking objects: 100% (6/6), 2.82 KiB | 240.00 KiB/s, done.
-From https://github.com/devlaming/gncat
+From https://github.com/devlaming/gcat
    481a4bf..fddd8cc  main       -> origin/main
 Updating 481a4bf..fddd8cc
 Fast-forward
