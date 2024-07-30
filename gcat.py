@@ -319,10 +319,12 @@ def GCAT():
         # left joint data with covariates
         DATA=pd.merge(left=DATA,right=xdata,how='left',left_on=['FID','IID'],right_on=['FID','IID'])
         # retrieve matched covariates data baseline model, and add intercept
-        xbase=DATA.values[:,5:]
+        xbase=DATA.values[:,4:]
         xbase=np.hstack((np.ones((xbase.shape[0],1)),xbase))
+        xlabels=['intercept']+xdata.iloc[:,2:].columns.to_list()
     else: # else set covars as intercept only
         xbase=np.ones((DATA.shape[0],1))
+        xlabels=['intercept']
     # count number of regressors
     kbase=xbase.shape[1]
     # find observations where at least one covariate is missing
@@ -370,6 +372,9 @@ def GCAT():
     # estimate baseline model
     logger.info('Estimating baseline model')
     (param0,logL0,_,_,_,_,converged0)=Newton(param0)
+    # write baseline model estimates to output file
+    pd.DataFrame(param0,columns=['ALPHA1','ALPHA2','BETA1','BETA2','GAMMA'],\
+                 index=xlabels).to_csv(args.out+extBASE,sep=sep)                     
     # if baseline model did not converge: throw error
     if not(converged0):
         raise RuntimeError('Estimates baseline model (=no SNPs) not converged')
