@@ -17,8 +17,8 @@ TAUTRUEMAF=0.05
 TAUDATAMAF=0.01
 MINVAR=0.01
 MINEVALMH=1E-3
-MINN=1000
-MINM=100
+MINN=10
+MINM=1
 thetainv=2/(1+5**0.5)
 oneminthetainv=1-thetainv
 
@@ -41,16 +41,20 @@ extFRQ='.frq'
 extBASE='.baseline_estimates.txt'
 extASSOC='.assoc'
 
+# set separator and end-of-line character
+sep='\t'
+eol='\n'
+
 # define text for welcom screen
 __version__ = 'v0.1'
-HEADER = "\n"
-HEADER += "------------------------------------------------------------\n"
-HEADER += "| GCAT (Genome-wide Cross-trait concordance Analysis Tool) |\n"
-HEADER += "------------------------------------------------------------\n"
-HEADER += "| BETA {V}, (C) 2024 Ronald de Vlaming                    |\n".format(V=__version__)
-HEADER += "| Vrije Universiteit Amsterdam                             |\n"
-HEADER += "| GNU General Public License v3                            |\n"
-HEADER += "------------------------------------------------------------\n"
+HEADER = eol
+HEADER += '------------------------------------------------------------'+eol
+HEADER += '| GCAT (Genome-wide Cross-trait concordance Analysis Tool) |'+eol
+HEADER += '------------------------------------------------------------'+eol
+HEADER += '| BETA {V}, (C) 2024 Ronald de Vlaming                    |'.format(V=__version__)+eol
+HEADER += '| Vrije Universiteit Amsterdam                             |'+eol
+HEADER += '| GNU General Public License v3                            |'+eol
+HEADER += '------------------------------------------------------------'+eol
 
 def CalcLogL(param,logLonly=False):
     # calculate log-likelihood constant
@@ -107,7 +111,7 @@ def CalcLogL(param,logLonly=False):
         return logL
     else:
         # define gradient/n per observation as 3d array
-        G=np.zeros((k,5,n))
+        G=np.zeros((x.shape[1],5,x.shape[0]))
         G[:,0,:]=((x*((((r1/sig1)-(rho*r2/sig1))/unexp)[:,None]))/n).T
         G[:,1,:]=((x*((((r2/sig2)-(rho*r1/sig2))/unexp)[:,None]))/n).T
         G[:,2,:]=((x*(((((r1**2)-(rho*r1*r2))/unexp)[:,None])-1))/n).T
@@ -167,12 +171,14 @@ def Newton(param,silent=False):
         # get eigenvalue decomposition of minus unpackage Hessian
         (D,P)=np.linalg.eigh(-UH)
         # if lowest eigenvalue too low
-        if (D.min()<MINEVALMH):
+        if min(D)<MINEVALMH:
             # bend s.t. Newton becomes more like gradient descent
             a=(MINEVALMH-D.min())/(1-D.min())
-            D=(1-a)*D+a
+            Dadj=(1-a)*D+a
+        else:
+            Dadj=D
         # get Newton-Raphson update vector
-        update=P@((((grad.reshape((k*5,1))).T@P)/D).T)
+        update=P@((((grad.reshape((k*5,1))).T@P)/Dadj).T)
         # calculate convergence criterion
         msg=(update*grad.reshape((k*5,1))).sum()
         # if convergence criterion met
@@ -188,7 +194,7 @@ def Newton(param,silent=False):
             if not(silent):
                 logger.info('Newton iteration '+str(i)+': logL='+str(logL)+'; '\
                       +str(j)+' line-search steps, yielding step size = '+str(step))
-    return param,logL,grad,H,G,converged
+    return param,logL,grad,H,G,D,converged
 
 def GoldenSection(param1,update):
     # initialise parameters at various points along interval
@@ -240,23 +246,34 @@ def GoldenSection(param1,update):
     return param2,i,step2
 
 def InitialiseParams():
+    # get x for observations where y1 resp. y2 is not missing
     x1=x[y1notnan,:]
     x2=x[y2notnan,:]
+    # calculate inv(X'X) for these two subsets of observations
     invXTX1=np.linalg.inv((x1.T@x1)/n1)
     invXTX2=np.linalg.inv((x2.T@x2)/n2)
+    # calculate coefficients for baseline regressors w.r.t. E[y1] and E[y2]
     a1=invXTX1@((x1.T@y1[y1notnan])/n1)
     a2=invXTX2@((x2.T@y2[y2notnan])/n2)
+    # get regression residuals e1 and e2
     e1=y1-x@a1
     e2=y2-x@a2
+    # take transformation f() of residuals, such that under GCAT's DGP
+    # E[f(e)] is linear function of regressors
     z1=0.5*np.log(e1**2)
     z2=0.5*np.log(e2**2)
+    # get regression coefficients for baseline regressors w.r.t. Var(y1) and Var(y2)
     b1=invXTX1@((x1.T@z1[y1notnan])/n1)
     b2=invXTX2@((x2.T@z2[y2notnan])/n2)
+    # rescale residuals based on implied standard deviation
     r1=e1/np.exp(x@b1)
     r2=e2/np.exp(x@b2)
+    # calculate correlation between rescaled residuals
     rhomean=(np.corrcoef(r1[ybothnotnan],r2[ybothnotnan]))[0,1]
+    # set intercept for gamma s.t. Corr(y1,y2)=rhomean for all individuals
     gc=np.zeros(k)
     gc[0]=np.log((1+rhomean)/(1-rhomean))
+    # collect and return initialised values
     param0=np.vstack((a1,a2,b1,b2,gc)).T
     return param0
 
@@ -267,15 +284,15 @@ def GCAT():
     logger.info('Reading data')
     # count number of SNPs from bim
     M=CountLines(args.bfile+extBIM)
-    logger.info('Found data on '+str(M)+ ' SNPs in '+args.bfile+extBIM)
+    logger.info('Found '+str(M)+ ' SNPs in '+args.bfile+extBIM)
     # read fam
-    famdata=pd.read_csv(args.bfile+extFAM,sep='\t',header=None,names=['FID','IID','PID','MID','SEX','PHE'])
+    famdata=pd.read_csv(args.bfile+extFAM,sep=sep,header=None,names=['FID','IID','PID','MID','SEX','PHE'])
     nG=famdata.shape[0]
-    logger.info('Found data on '+str(nG)+' individuals in '+args.bfile+extFAM)
+    logger.info('Found '+str(nG)+' individuals in '+args.bfile+extFAM)
     # retain only FID and IID of fam data
     DATA=famdata.iloc[:,[0,1]]
     # read pheno file
-    ydata=pd.read_csv(args.pheno,sep='\t')
+    ydata=pd.read_csv(args.pheno,sep=sep)
     # check two phenotypes in phenotype data
     if ydata.shape[1]!=4:
         raise ValueError(args.pheno+' does not contain exactly two phenotypes')
@@ -283,7 +300,7 @@ def GCAT():
     y1label=ydata.columns[2]
     y2label=ydata.columns[3]
     # print update
-    logger.info('Found data on '+str(ydata.shape[0])+' individuals and two traits, labelled '\
+    logger.info('Found '+str(ydata.shape[0])+' individuals and two traits, labelled '\
                  +y1label+' and '+y2label+', in '+args.pheno)
     # left join FID,IID from fam with pheno data
     DATA=pd.merge(left=DATA,right=ydata,how='left',left_on=['FID','IID'],right_on=['FID','IID'])
@@ -293,11 +310,11 @@ def GCAT():
     # if covars provideded
     if covars:
         # read covars
-        xdata=pd.read_csv(args.covar,sep='\t')
+        xdata=pd.read_csv(args.covar,sep=sep)
         # check if at least one covariate
         if xdata.shape[1]<3:
             raise ValueError(args.covar+' does not contain data on any covariates')
-        logger.info('Found data on '+str(xdata.shape[0])+' individuals and '\
+        logger.info('Found '+str(xdata.shape[0])+' individuals and '\
                      +str(xdata.shape[1]-2)+' control variables in '+args.covar)
         # left joint data with covariates
         DATA=pd.merge(left=DATA,right=xdata,how='left',left_on=['FID','IID'],right_on=['FID','IID'])
@@ -352,7 +369,7 @@ def GCAT():
     param0=InitialiseParams()
     # estimate baseline model
     logger.info('Estimating baseline model')
-    (param0,logL0,_,_,_,converged0)=Newton(param0)
+    (param0,logL0,_,_,_,_,converged0)=Newton(param0)
     # if baseline model did not converge: throw error
     if not(converged0):
         raise RuntimeError('Estimates baseline model (=no SNPs) not converged')
@@ -386,43 +403,43 @@ def GCAT():
     # connect to write association results file
     connassoc=open(args.out+extASSOC,'w')
     # write first line to results file
-    connassoc.write('CHROMOSOME\t'\
-                    +'SNP_ID\t'\
-                    +'BASELINE_ALLELE\t'\
-                    +'BASELINE_ALLELE_FREQ\t'\
-                    +'EFFECT_ALLELE\t'\
-                    +'EFFECT_ALLELE_FREQ\t'\
-                    +'N_'+y1label+'_COMPLETE\t'\
-                    +'N_'+y2label+'_COMPLETE\t'\
-                    +'NBOTHCOMPLETE\t'\
-                    +'LRT\t'\
-                    +'P_LRT\t'\
-                    +'ESTIMATE_ALPHA1\t'\
-                    +'SE_ALPHA1\t'\
-                    +'WALD_ALPHA1\t'\
-                    +'P_ALPHA1\t'\
-                    +'ESTIMATE_ALPHA2\t'\
-                    +'SE_ALPHA2\t'\
-                    +'WALD_ALPHA2\t'\
-                    +'P_ALPHA2\t'\
-                    +'ESTIMATE_BETA1\t'\
-                    +'SE_BETA1\t'\
-                    +'WALD_BETA1\t'\
-                    +'P_BETA1\t'\
-                    +'APE_STDEV_'+y1label+'\t'\
-                    +'SE_APE_STDEV_'+y1label+'\t'\
-                    +'ESTIMATE_BETA2\t'\
-                    +'SE_BETA2\t'\
-                    +'WALD_BETA2\t'\
-                    +'P_BETA2\t'\
-                    +'APE_STDEV_'+y2label+'\t'\
-                    +'SE_APE_STDEV_'+y1label+'\t'\
-                    +'ESTIMATE_GAMMA\t'\
-                    +'SE_GAMMA\t'\
-                    +'WALD_GAMMA\t'\
-                    +'P_GAMMA\t'\
-                    +'APE_CORR_'+y1label+'_'+y2label+'\t'\
-                    +'SE_APE_CORR_'+y1label+'_'+y2label+'\n')
+    connassoc.write('CHROMOSOME'+sep\
+                    +'SNP_ID'+sep\
+                    +'BASELINE_ALLELE'+sep\
+                    +'BASELINE_ALLELE_FREQ'+sep\
+                    +'EFFECT_ALLELE'+sep\
+                    +'EFFECT_ALLELE_FREQ'+sep\
+                    +'N_'+y1label+'_COMPLETE'+sep\
+                    +'N_'+y2label+'_COMPLETE'+sep\
+                    +'NBOTHCOMPLETE'+sep\
+                    +'LRT'+sep\
+                    +'P_LRT'+sep\
+                    +'ESTIMATE_ALPHA1'+sep\
+                    +'SE_ALPHA1'+sep\
+                    +'WALD_ALPHA1'+sep\
+                    +'P_ALPHA1'+sep\
+                    +'ESTIMATE_ALPHA2'+sep\
+                    +'SE_ALPHA2'+sep\
+                    +'WALD_ALPHA2'+sep\
+                    +'P_ALPHA2'+sep\
+                    +'ESTIMATE_BETA1'+sep\
+                    +'SE_BETA1'+sep\
+                    +'WALD_BETA1'+sep\
+                    +'P_BETA1'+sep\
+                    +'APE_STDEV_'+y1label+sep\
+                    +'SE_APE_STDEV_'+y1label+sep\
+                    +'ESTIMATE_BETA2'+sep\
+                    +'SE_BETA2'+sep\
+                    +'WALD_BETA2'+sep\
+                    +'P_BETA2'+sep\
+                    +'APE_STDEV_'+y2label+sep\
+                    +'SE_APE_STDEV_'+y1label+sep\
+                    +'ESTIMATE_GAMMA'+sep\
+                    +'SE_GAMMA'+sep\
+                    +'WALD_GAMMA'+sep\
+                    +'P_GAMMA'+sep\
+                    +'APE_CORR_'+y1label+'_'+y2label+sep\
+                    +'SE_APE_CORR_'+y1label+'_'+y2label+eol)
     # for each SNP
     for j in tqdm(range(M)):
         # read bytes
@@ -444,10 +461,10 @@ def GCAT():
         g[g==3]=2
         # drop rows corresponding to empty bits of last byte for each SNP
         g=g[0:nG]
+        # calculate empirical frequency of effect allele
+        eaf=(np.nanmean(g))/2
         # find rows where genotype is missing
         gisnan=np.isnan(g)
-        # calculate empirical frequency of effect allele
-        eaf=(g[~gisnan].mean())/2
         # initialise SNP effects at zero
         param1=np.vstack((param0.copy(),np.zeros((1,5))))
         # add SNP to matrix of regressors
@@ -473,34 +490,36 @@ def GCAT():
         nboth=ybothnotnan.sum()
         n=y1ory2notnan.sum()
         N=n1+n2
-        # apply Newton's method
-        (param1,logL1,grad1,H1,G1,converged1)=Newton(param1,silent=True)
+        # apply Newton's method, provided nboth>=MINN
+        if nboth>=MINN:
+            (param1,logL1,grad1,H1,G1,D1,converged1)=Newton(param1,silent=True)
+        else: # else don't even try
+            (param1,logL1,grad1,H1,G1,D1,converged1)=(None,None,None,None,None,[0],False)
         # calculate and store estimates, standard errors, etc.
-        CalculateStats(eaf,param1,logL1,logL0,H1,G1,converged1,connbim,connassoc)
+        CalculateStats(eaf,param1,logL1,logL0,H1,G1,D1,converged1,connbim,connassoc)
     # close connections to bed, bim, and assoc files
     connbed.close()
     connbim.close()
     connassoc.close()    
 
-def CalculateStats(eaf,param1,logL1,logL0,H1,G1,converged1,connbim,connassoc):
+def CalculateStats(eaf,param1,logL1,logL0,H1,G1,D1,converged1,connbim,connassoc):
     # read line from bim file, strip trailing newline, split by tabs
-    snpline=connbim.readline().rstrip('\n').split('\t')
+    snpline=connbim.readline().rstrip(eol).split(sep)
     # get chromosome number, snp ID, baseline allele, and effect allele
     snpchr=snpline[0]
     snpid=snpline[1]
     snpbaseallele=snpline[4]
     snpeffallele=snpline[5]
-    # set separator, end-of-line character, and separator followed by NaN
-    sep='\t'
-    eol='\n'
-    nanfield='\tNaN'
     # build up line to write
     outputline=snpchr+sep+snpid+sep+snpbaseallele+sep+str(1-eaf)+sep\
                +snpeffallele+sep+str(eaf)+sep+str(n1)+sep+str(n2)+sep+str(nboth)
-    # if converged, calculate and collect stats, to write them to assoc file
-    if converged1:
+    # define sequence of NaNs for missing stuff, if any
+    nanfield=sep+'nan'
+    nanfields=28*nanfield
+    # if converged and Hessian pd, calculate stats and write to assoc file
+    if converged1 and min(D1)>MINEVALMH:
         invH1=np.linalg.inv(H1.reshape((k*5,k*5)))
-        GGT1=(G1.reshape((k*5,n)))@((G1.reshape((k*5,n))).T)
+        GGT1=(G1.reshape((k*5,G1.shape[2])))@((G1.reshape((k*5,G1.shape[2]))).T)
         param1Var=invH1@GGT1@invH1
         param1SE=((np.diag(param1Var))**0.5).reshape((k,5))
         # calculate average partial effect on expectations, stdevs and correlation
@@ -537,14 +556,17 @@ def CalculateStats(eaf,param1,logL1,logL0,H1,G1,converged1,connbim,connassoc):
         # add results for effect on E[Y2] to line
         outputline+=sep+str(snp[1])+sep+str(snpSE[1])+sep+str(snpWald[1])+sep+str(snpPWald[1])
         # add results for effect on Stdev(Y1) to line
-        outputline+=sep+str(snp[2])+sep+str(snpSE[2])+sep+str(snpWald[2])+sep+str(snpPWald[2])+sep+str(snpAPEsig1)+sep+str(snpAPEsig1SE)
+        outputline+=sep+str(snp[2])+sep+str(snpSE[2])+sep+str(snpWald[2])+sep+str(snpPWald[2])\
+                    +sep+str(snpAPEsig1)+sep+str(snpAPEsig1SE)
         # add results for effect on Stdev(Y2) to line
-        outputline+=sep+str(snp[3])+sep+str(snpSE[3])+sep+str(snpWald[3])+sep+str(snpPWald[3])+sep+str(snpAPEsig2)+sep+str(snpAPEsig2SE)
+        outputline+=sep+str(snp[3])+sep+str(snpSE[3])+sep+str(snpWald[3])+sep+str(snpPWald[3])\
+                    +sep+str(snpAPEsig2)+sep+str(snpAPEsig2SE)
         # add results for effect on Stdev(Y2) to line
-        outputline+=sep+str(snp[4])+sep+str(snpSE[4])+sep+str(snpWald[4])+sep+str(snpPWald[4])+sep+str(snpAPErho)+sep+str(snpAPErhoSE)
+        outputline+=sep+str(snp[4])+sep+str(snpSE[4])+sep+str(snpWald[4])+sep+str(snpPWald[4])\
+                    +sep+str(snpAPErho)+sep+str(snpAPErhoSE)
     else:
         # if model not converged: set NaNs as SNP results
-        outputline+=28*nanfield
+        outputline+=nanfields
     # add eol to line
     outputline+=eol
     # write line
@@ -575,7 +597,7 @@ def SimulateG():
     connbim=open(args.out+extBIM,'w')
     # open connection for writing frequency file
     connfrq=open(args.out+extFRQ,'w')
-    connfrq.write('CHR\tSNP\tA1\tA2\tAF1\tAF2\n')
+    connfrq.write('CHR'+sep+'SNP'+sep+'A1'+sep+'A2'+sep+'AF1'+sep+'AF2'+eol)
     # calculate how many SNPs can be simulated at once (at least 1)
     Mperb=max(int(dimg/n),1)
     logger.info('Simulating SNPs and writing .bim file in blocks of '+str(Mperb)+' SNPs')
@@ -638,9 +660,9 @@ def SimulateG():
             # draw two alleles without replacement from four possible alleles
             A1A2=rng.choice(lAlleles,size=2,replace=False)
             # write line of .bim file
-            connbim.write('0\trs'+str(i)+'\t0\t'+str(j)+'\t'+A1A2[0]+'\t'+A1A2[1]+'\n')
+            connbim.write('0'+sep+'rs'+str(i)+sep+'0'+sep+str(j)+sep+A1A2[0]+sep+A1A2[1]+eol)
             # write line of .frq file
-            connfrq.write('0\trs'+str(i)+'\t'+A1A2[0]+'\t'+A1A2[1]+'\t'+str(1-eaf[j])+'\t'+str(eaf[j])+'\n')
+            connfrq.write('0'+sep+'rs'+str(i)+sep+A1A2[0]+sep+A1A2[1]+sep+str(1-eaf[j])+sep+str(eaf[j])+eol)
     # close connections
     connbed.close()
     connbim.close()
@@ -670,8 +692,8 @@ def SimulateY():
     xbeta2=np.zeros(n)
     xgamma=np.zeros(n)
     # print update
-    logger.info('Number of individuals in '+args.bfile+extFAM+': n=' +str(n))
-    logger.info('Number of SNPs in '+args.bfile+extBIM+': m='+str(M))
+    logger.info('Found '+str(n)+' individuals in '+args.bfile+extFAM)
+    logger.info('Found '+str(M)+' SNPs in '+args.bfile+extBIM)
     # calculate how many SNPs can be read at once (at least 1)
     Mperb=max(int(dimg/n),1)
     # count modulo(m,#SNPs per block)
@@ -706,7 +728,15 @@ def SimulateY():
     # connect to write effect file
     conneff=open(args.out+extEFF,'w')
     # print header row to effect file
-    conneff.write('CHROMOSOME\tSNP_ID\tBASELINE_ALLELE\tEFFECT_ALLELE\tEFFECT_E[Y1]\tEFFECT_E[Y2]\tEFFECT_VAR(Y1)\tEFFECT_VAR(Y2)\tEFFECT_CORR(Y1,Y2)\n')
+    conneff.write('CHROMOSOME'+sep\
+                    +'SNP_ID'+sep\
+                    +'BASELINE_ALLELE'+sep\
+                    +'EFFECT_ALLELE'+sep\
+                    +'ALPHA1'+sep\
+                    +'ALPHA2'+sep\
+                    +'BETA1'+sep\
+                    +'BETA2'+sep\
+                    +'GAMMA'+eol)
     logger.info('Reading in '+args.bfile+extBED+' in blocks of '+str(Mperb)+' SNPs')
     # for each blok
     for b in tqdm(range(B)):
@@ -767,16 +797,16 @@ def SimulateY():
         # for each SNP in this block
         for j in range(m):
             # read line from bim file, strip trailing newline, split by tabs
-            snpline=connbim.readline().rstrip('\n').split('\t')
+            snpline=connbim.readline().rstrip(eol).split(sep)
             # get chromosome number, snp ID, baseline allele, and effect allele
             snpchr=snpline[0]
             snpid=snpline[1]
             snpbaseallele=snpline[4]
             snpeffallele=snpline[5]
             # print to .eff file the SNP info (above) and corresponding effects
-            conneff.write(snpchr+'\t'+snpid+'\t'+snpbaseallele+'\t'\
-                          +snpeffallele+'\t'+str(alpha1[j])+'\t'+str(alpha2[j])\
-                          +'\t'+str(beta1[j])+'\t'+str(beta2[j])+'\t'+str(gamma[j])+'\n')
+            conneff.write(snpchr+sep+snpid+sep+snpbaseallele+sep\
+                          +snpeffallele+sep+str(alpha1[j])+sep+str(alpha2[j])\
+                          +sep+str(beta1[j])+sep+str(beta2[j])+sep+str(gamma[j])+eol)
     # close connection bed, bim, eff file
     connbed.close()
     connbim.close()
@@ -804,9 +834,9 @@ def SimulateY():
     y2=xalpha2+e2
     ydata=pd.DataFrame(np.hstack((y1[:,None],y2[:,None])),columns=['Y1','Y2'])
     # read fam file to dataframe
-    famdata=pd.read_csv(args.bfile+extFAM,sep='\t',header=None,names=['FID','IID','PID','MID','SEX','PHE'])
+    famdata=pd.read_csv(args.bfile+extFAM,sep=sep,header=None,names=['FID','IID','PID','MID','SEX','PHE'])
     # concatenate FID,IID,Y1,Y2, and write to csv
-    pd.concat([famdata.iloc[:,[0,1]],ydata],axis=1).to_csv(args.out+extPHE,index=False,sep='\t')
+    pd.concat([famdata.iloc[:,[0,1]],ydata],axis=1).to_csv(args.out+extPHE,index=False,sep=sep)
     # store name of just generated phenotype file
     args.pheno=args.out+extPHE
 
@@ -930,11 +960,11 @@ def ShowWelcome():
         opts=vars(args)
         non_defaults=[x for x in opts.keys() if opts[x] != defaults[x]]
         header = HEADER
-        header += "\nYour call: \n"
-        header += './gcat.py \\\n'
+        header += eol+'Your call:'+eol
+        header += './gcat.py \\'+eol
         options = ['--'+x.replace('_','-')+' '+str(opts[x])+' \\' for x in non_defaults]
-        header += '\n'.join(options).replace('True','').replace('False','').replace("', \'", ' ').replace("']", '').replace("['", '').replace('[', '').replace(']', '').replace(', ', ' ').replace('  ', ' ')
-        header = header[0:-1]+'\n'
+        header += eol.join(options).replace('True','').replace('False','').replace("', \'", ' ').replace("']", '').replace("['", '').replace('[', '').replace(']', '').replace(', ', ' ').replace('  ', ' ')
+        header = header[0:-1]+eol
         logger.info(header)
         if args.out is None:
             args.out=outDEFAULT
@@ -1060,15 +1090,15 @@ def main():
         FindBlockSize()
         # Simulate genotypes if necessary
         if simulg:
-            logger.info('\nSIMULATING GENOTYPES')
+            logger.info(eol+'SIMULATING GENOTYPES')
             SimulateG()
         # Simulate phenotypes if necessary
         if simuly:
-            logger.info('\nSIMULATING PHENOTYPES')
+            logger.info(eol+'SIMULATING PHENOTYPES')
             SimulateY()
         # Perform GCAT if args.simul_only is False
         if not(args.simul_only):
-            logger.info('\nPERFORMING GCAT')
+            logger.info(eol+'PERFORMING GCAT')
             GCAT()
     except Exception:
         # print the traceback
