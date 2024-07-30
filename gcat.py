@@ -409,6 +409,8 @@ def GCAT():
                     +'BASELINE_ALLELE_FREQ'+sep\
                     +'EFFECT_ALLELE'+sep\
                     +'EFFECT_ALLELE_FREQ'+sep\
+                    +'HWE_PVAL'+sep\
+                    +'N_GENOTYPED'+sep\
                     +'N_'+y1label+'_COMPLETE'+sep\
                     +'N_'+y2label+'_COMPLETE'+sep\
                     +'NBOTHCOMPLETE'+sep\
@@ -461,10 +463,30 @@ def GCAT():
         g[g==3]=2
         # drop rows corresponding to empty bits of last byte for each SNP
         g=g[0:nG]
-        # calculate empirical frequency of effect allele
-        eaf=(np.nanmean(g))/2
         # find rows where genotype is missing
         gisnan=np.isnan(g)
+        # count number of nonmissing genotypes
+        ngeno=(~gisnan).sum()
+        # initialise empirical allele frequency and HWE pval as NaN
+        eaf=np.nan
+        hweP=np.nan
+        # if at least 1 nonmissing genotype
+        if ngeno>0:
+            # calculate empirical frequency
+            eaf=(np.nanmean(g))/2
+            # if empirical frequency is not precisely zero or one
+            if (eaf*(1-eaf))!=0:
+                # calculate counts of homozygotes and heterozygotes
+                n0=(g==0).sum()
+                n1=(g==1).sum()
+                n2=(g==2).sum()
+                # calculate expected counts
+                en0=((1-eaf)**2)*ngeno
+                en1=(2*eaf*(1-eaf))*ngeno
+                en2=(eaf**2)*ngeno
+                # calculate HWE test stat
+                hwe=(((n0-en0)**2)/en0)+(((n1-en1)**2)/en1)+(((n2-en2)**2)/en2)
+                hweP=1-stats.chi2.cdf(hwe,1)
         # initialise SNP effects at zero
         param1=np.vstack((param0.copy(),np.zeros((1,5))))
         # add SNP to matrix of regressors
@@ -496,13 +518,13 @@ def GCAT():
         else: # else don't even try
             (param1,logL1,grad1,H1,G1,D1,converged1)=(None,None,None,None,None,[0],False)
         # calculate and store estimates, standard errors, etc.
-        CalculateStats(eaf,param1,logL1,logL0,H1,G1,D1,converged1,connbim,connassoc)
+        CalculateStats(ngeno,eaf,hweP,param1,logL1,logL0,H1,G1,D1,converged1,connbim,connassoc)
     # close connections to bed, bim, and assoc files
     connbed.close()
     connbim.close()
     connassoc.close()    
 
-def CalculateStats(eaf,param1,logL1,logL0,H1,G1,D1,converged1,connbim,connassoc):
+def CalculateStats(ngeno,eaf,hweP,param1,logL1,logL0,H1,G1,D1,converged1,connbim,connassoc):
     # read line from bim file, strip trailing newline, split by tabs
     snpline=connbim.readline().rstrip(eol).split(sep)
     # get chromosome number, snp ID, baseline allele, and effect allele
@@ -512,7 +534,8 @@ def CalculateStats(eaf,param1,logL1,logL0,H1,G1,D1,converged1,connbim,connassoc)
     snpeffallele=snpline[5]
     # build up line to write
     outputline=snpchr+sep+snpid+sep+snpbaseallele+sep+str(1-eaf)+sep\
-               +snpeffallele+sep+str(eaf)+sep+str(n1)+sep+str(n2)+sep+str(nboth)
+               +snpeffallele+sep+str(eaf)+sep+str(hweP)+sep+str(ngeno)+sep\
+               +str(n1)+sep+str(n2)+sep+str(nboth)
     # define sequence of NaNs for missing stuff, if any
     nanfield=sep+'nan'
     nanfields=28*nanfield
