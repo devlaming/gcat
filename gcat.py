@@ -16,7 +16,7 @@ TOL=1E-12
 TAUTRUEMAF=0.05
 TAUDATAMAF=0.01
 MINVAR=0.01
-MINEVALMH=1E-3
+MINEVAL=1E-3
 MINN=10
 MINM=1
 thetainv=2/(1+5**0.5)
@@ -171,9 +171,9 @@ def Newton(param,silent=False):
         # get eigenvalue decomposition of minus unpackage Hessian
         (D,P)=np.linalg.eigh(-UH)
         # if lowest eigenvalue too low
-        if min(D)<MINEVALMH:
+        if min(D)<MINEVAL:
             # bend s.t. Newton becomes more like gradient descent
-            a=(MINEVALMH-D.min())/(1-D.min())
+            a=(MINEVAL-D.min())/(1-D.min())
             Dadj=(1-a)*D+a
         else:
             Dadj=D
@@ -333,6 +333,19 @@ def GCAT():
     xbase[xmissing,:]=0
     y1base[xmissing]=np.nan
     y2base[xmissing]=np.nan
+    # count number of observations with nonmissing data on covariates; throw error if zero
+    nxnotnan=(~xmissing).sum()
+    if nxnotnan==0:
+        raise ValueError('No observations in '+args.covar\
+                         +' without any missingness that can be matched to '+args.bfile+extFAM)
+    # calculate lowest eigenvalue of X'X for observations without any missingness
+    (Dxtx,_)=np.linalg.eigh(((xbase[~xmissing,:].T)@(xbase[~xmissing,:]))/nxnotnan)
+    # if too low, throw error:
+    if min(Dxtx)<MINEVAL:
+        raise ValueError('Regressors in '+args.covar+' have too much multicollinearity. '\
+                         +'Did you add an intercept to your covariates file? Please remove it. '\
+                         +'Or do you have set of dummies that is perfectly collinear with intercept? Please remove one category. '\
+                         +'Recall: GCAT always adds intercept to model!')
     # find indices of non missing observations
     y1notnanbase=~np.isnan(y1base)
     y2notnanbase=~np.isnan(y2base)
@@ -545,7 +558,7 @@ def CalculateStats(ngeno,eaf,hweP,param1,logL1,logL0,H1,G1,D1,converged1,connbim
     nanfield=sep+'nan'
     nanfields=28*nanfield
     # if converged and Hessian pd, calculate stats and write to assoc file
-    if converged1 and min(D1)>MINEVALMH:
+    if converged1 and min(D1)>MINEVAL:
         invH1=np.linalg.inv(H1.reshape((k*5,k*5)))
         GGT1=(G1.reshape((k*5,G1.shape[2])))@((G1.reshape((k*5,G1.shape[2]))).T)
         param1Var=invH1@GGT1@invH1
