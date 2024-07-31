@@ -59,11 +59,11 @@ HEADER += '| Vrije Universiteit Amsterdam                             |'+eol
 HEADER += '| GNU General Public License v3                            |'+eol
 HEADER += '------------------------------------------------------------'+eol
 
-def CalcLogL(param,y1,y2,y1notnan,y2notnan,ybothnotnan,n,nboth,N,x,k,logLonly=False):
+def CalcLogL(param,y1,y2,y1notnan,y2notnan,ybothnotnan,n,nboth,N,X,K,logLonly=False):
     # calculate log-likelihood constant
     cons=N*np.log(2*np.pi)
     # calculate linear parts
-    linpart=(x[:,:,None]*param[None,:,:]).sum(axis=1)
+    linpart=(X[:,:,None]*param[None,:,:]).sum(axis=1)
     # get sigma1, sigma2, delta, and rho
     sig1=np.exp(linpart[:,2])
     sig2=np.exp(linpart[:,3])
@@ -114,12 +114,12 @@ def CalcLogL(param,y1,y2,y1notnan,y2notnan,ybothnotnan,n,nboth,N,x,k,logLonly=Fa
         return logL
     else:
         # define gradient/n per observation as 3d array
-        G=np.zeros((x.shape[1],5,x.shape[0]))
-        G[:,0,:]=((x*((((r1/sig1)-(rho*r2/sig1))/unexp)[:,None]))/n).T
-        G[:,1,:]=((x*((((r2/sig2)-(rho*r1/sig2))/unexp)[:,None]))/n).T
-        G[:,2,:]=((x*(((((r1**2)-(rho*r1*r2))/unexp)[:,None])-1))/n).T
-        G[:,3,:]=((x*(((((r2**2)-(rho*r1*r2))/unexp)[:,None])-1))/n).T
-        G[:,4,:]=((x*((0.5*rho-0.5*((((delta**2)-1)/(4*delta))*(r1**2+r2**2)\
+        G=np.zeros((K,5,nPLINK))
+        G[:,0,:]=((X*((((r1/sig1)-(rho*r2/sig1))/unexp)[:,None]))/n).T
+        G[:,1,:]=((X*((((r2/sig2)-(rho*r1/sig2))/unexp)[:,None]))/n).T
+        G[:,2,:]=((X*(((((r1**2)-(rho*r1*r2))/unexp)[:,None])-1))/n).T
+        G[:,3,:]=((X*(((((r2**2)-(rho*r1*r2))/unexp)[:,None])-1))/n).T
+        G[:,4,:]=((X*((0.5*rho-0.5*((((delta**2)-1)/(4*delta))*(r1**2+r2**2)\
                                     -(((delta**2+1)/(2*delta))\
                                       *r1*r2)))[:,None]))/n).T
         # set gradient to zero w.r.t. beta1 for observation with missing y1
@@ -129,25 +129,25 @@ def CalcLogL(param,y1,y2,y1notnan,y2notnan,ybothnotnan,n,nboth,N,x,k,logLonly=Fa
         # calculate gradient/n by summing gradient per obs along observations
         grad=G.sum(axis=2)
         # initialise hessian/n
-        H=np.zeros((k,5,k,5))
+        H=np.zeros((K,5,K,5))
         # get entries hessian/n
-        H[:,0,:,0]=-(x.T@(x*((1/(unexp*(sig1**2)))[:,None])))/n
-        H[:,1,:,1]=-(x.T@(x*((1/(unexp*(sig2**2)))[:,None])))/n
-        H[:,0,:,1]=-(x.T@(x*((-rho/(unexp*sig1*sig2))[:,None])))/n
-        H[:,0,:,2]=(x.T@(x*(((1/(sig1*unexp))*(rho*r2-2*r1))[:,None])))/n
-        H[:,1,:,3]=(x.T@(x*(((1/(sig2*unexp))*(rho*r1-2*r2))[:,None])))/n
-        H[:,0,:,3]=(x.T@(x*(((1/(sig1*unexp))*(rho*r2))[:,None])))/n
-        H[:,1,:,2]=(x.T@(x*(((1/(sig2*unexp))*(rho*r1))[:,None])))/n
-        H[:,0,:,4]=(x.T@(x*(((1/(sig1*unexp))*(rho*r1\
+        H[:,0,:,0]=-(X.T@(X*((1/(unexp*(sig1**2)))[:,None])))/n
+        H[:,1,:,1]=-(X.T@(X*((1/(unexp*(sig2**2)))[:,None])))/n
+        H[:,0,:,1]=-(X.T@(X*((-rho/(unexp*sig1*sig2))[:,None])))/n
+        H[:,0,:,2]=(X.T@(X*(((1/(sig1*unexp))*(rho*r2-2*r1))[:,None])))/n
+        H[:,1,:,3]=(X.T@(X*(((1/(sig2*unexp))*(rho*r1-2*r2))[:,None])))/n
+        H[:,0,:,3]=(X.T@(X*(((1/(sig1*unexp))*(rho*r2))[:,None])))/n
+        H[:,1,:,2]=(X.T@(X*(((1/(sig2*unexp))*(rho*r1))[:,None])))/n
+        H[:,0,:,4]=(X.T@(X*(((1/(sig1*unexp))*(rho*r1\
                                            -((1+(rho**2))*(r2/2))))[:,None])))/n
-        H[:,1,:,4]=(x.T@(x*(((1/(sig2*unexp))*(rho*r2\
+        H[:,1,:,4]=(X.T@(X*(((1/(sig2*unexp))*(rho*r2\
                                            -((1+(rho**2))*(r1/2))))[:,None])))/n
-        H[:,2,:,2]=-(x.T@(x*(((1/unexp)*(2*(r1**2)-rho*r1*r2))[:,None])))/n
-        H[:,3,:,3]=-(x.T@(x*(((1/unexp)*(2*(r2**2)-rho*r1*r2))[:,None])))/n
-        H[:,2,:,3]=-(x.T@(x*(((1/unexp)*(-rho*r1*r2))[:,None])))/n
-        H[:,2,:,4]=-(x.T@(x*(((0.5*r1*r2)-((rho/unexp)*(r1**2)))[:,None])))/n
-        H[:,3,:,4]=-(x.T@(x*(((0.5*r1*r2)-((rho/unexp)*(r2**2)))[:,None])))/n
-        H[:,4,:,4]=-(x[ybothnotnan,:].T@(x[ybothnotnan,:]*(((((((delta**2)+1)/(8*delta))*((r1**2)+(r2**2)))\
+        H[:,2,:,2]=-(X.T@(X*(((1/unexp)*(2*(r1**2)-rho*r1*r2))[:,None])))/n
+        H[:,3,:,3]=-(X.T@(X*(((1/unexp)*(2*(r2**2)-rho*r1*r2))[:,None])))/n
+        H[:,2,:,3]=-(X.T@(X*(((1/unexp)*(-rho*r1*r2))[:,None])))/n
+        H[:,2,:,4]=-(X.T@(X*(((0.5*r1*r2)-((rho/unexp)*(r1**2)))[:,None])))/n
+        H[:,3,:,4]=-(X.T@(X*(((0.5*r1*r2)-((rho/unexp)*(r2**2)))[:,None])))/n
+        H[:,4,:,4]=-(X[ybothnotnan,:].T@(X[ybothnotnan,:]*(((((((delta**2)+1)/(8*delta))*((r1**2)+(r2**2)))\
                           -((((delta**2)-1)/(4*delta))*(r1*r2)))\
                          -(unexp/4))[ybothnotnan,None])))/n
         # use symmetry to fill gaps in hessian/n
@@ -156,19 +156,32 @@ def CalcLogL(param,y1,y2,y1notnan,y2notnan,ybothnotnan,n,nboth,N,x,k,logLonly=Fa
                 H[:,j,:,i]=H[:,i,:,j]
         return logL,grad,H,G
 
-def Newton(param,y1,y2,y1notnan,y2notnan,ybothnotnan,n,nboth,N,x,k,silent=False,linesearch=False):
+def Newton(param,y1,y2,y1notnan,y2notnan,ybothnotnan,n,nboth,N,g=None,gisnan=None,silent=False,linesearch=False):
+    # if genotype vector provided, calculate some key ingredients
+    if g is not None:
+        # combine into grand X matrix
+        X=np.hstack((x,g[:,None]))
+        # ensure rows of X are zero for observations where genotype is missing
+        X[gisnan,:]=0
+        # set number of regressors to no. of control variables + 1 (for the SNP)
+        K=k+1
+    else:
+        # otherwise use version without SNP as grand X
+        X=x
+        K=k
     # set iteration counter to zero and convergence to false
     i=0
     converged=False
     # while not converged and MAXITER not reached
     while not(converged) and i<MAXITER:
         # calculate log-likelihood, its gradient, and Hessian
-        (logL,grad,H,G)=CalcLogL(param,y1,y2,y1notnan,y2notnan,ybothnotnan,n,nboth,N,x,k)
+        (logL,grad,H,G)=CalcLogL(param,y1,y2,y1notnan,y2notnan,ybothnotnan,n,nboth,N,X,K)
         # if log-likelihood is -np.inf: quit; on a dead track for this SNP
         if np.isinf(logL):
-            return param,logL,grad,H,G,converged
+            D=[0]
+            return param,logL,grad,H,G,D,converged
         # unpack Hessian to matrix
-        UH=H.reshape((k*5,k*5))
+        UH=H.reshape((K*5,K*5))
         # take average of UH and UH.T for numerical stability
         UH=(UH+UH.T)/2
         # get eigenvalue decomposition of minus unpackage Hessian
@@ -181,9 +194,9 @@ def Newton(param,y1,y2,y1notnan,y2notnan,ybothnotnan,n,nboth,N,x,k,silent=False,
         else:
             Dadj=D
         # get Newton-Raphson update vector
-        update=P@((((grad.reshape((k*5,1))).T@P)/Dadj).T)
+        update=P@((((grad.reshape((K*5,1))).T@P)/Dadj).T)
         # calculate convergence criterion
-        msg=(update*grad.reshape((k*5,1))).sum()
+        msg=(update*grad.reshape((K*5,1))).sum()
         # if convergence criterion met
         if msg<TOL:
             # set convergence to true and calculate sampling variance
@@ -191,10 +204,10 @@ def Newton(param,y1,y2,y1notnan,y2notnan,ybothnotnan,n,nboth,N,x,k,silent=False,
         else:
             if linesearch:
                 # perform golden section to get new parameters estimates
-                (param,j,step)=GoldenSection(param,update.reshape((k,5)),y1,y2,y1notnan,y2notnan,ybothnotnan,n,nboth,N,x,k)
+                (param,j,step)=GoldenSection(param,update.reshape((K,5)),y1,y2,y1notnan,y2notnan,ybothnotnan,n,nboth,N,X,K)
             else:
                 # just apply Newton step directly
-                param+=update.reshape((k,5))
+                param+=update.reshape((K,5))
             # update iteration counter
             i+=1
             # print update if not silent
@@ -206,7 +219,7 @@ def Newton(param,y1,y2,y1notnan,y2notnan,ybothnotnan,n,nboth,N,x,k,silent=False,
                     logger.info('Newton iteration '+str(i)+': logL='+str(logL))
     return param,logL,grad,H,G,D,converged
 
-def GoldenSection(param1,update,y1,y2,y1notnan,y2notnan,ybothnotnan,n,nboth,N,x,k):
+def GoldenSection(param1,update,y1,y2,y1notnan,y2notnan,ybothnotnan,n,nboth,N,X,K):
     # initialise parameters at various points along interval
     param2=param1+oneminthetainv*update
     param3=param1+thetainv*update
@@ -217,8 +230,8 @@ def GoldenSection(param1,update,y1,y2,y1notnan,y2notnan,ybothnotnan,n,nboth,N,x,
     step3=thetainv
     step4=1
     # calculate log likelihood at mid-left and mid-right
-    logL2=CalcLogL(param2,y1,y2,y1notnan,y2notnan,ybothnotnan,n,nboth,N,x,k,logLonly=True)
-    logL3=CalcLogL(param3,y1,y2,y1notnan,y2notnan,ybothnotnan,n,nboth,N,x,k,logLonly=True)
+    logL2=CalcLogL(param2,y1,y2,y1notnan,y2notnan,ybothnotnan,n,nboth,N,X,K,logLonly=True)
+    logL3=CalcLogL(param3,y1,y2,y1notnan,y2notnan,ybothnotnan,n,nboth,N,X,K,logLonly=True)
     # set iteration counter to zero and convergence to false
     i=0
     converged=False
@@ -236,7 +249,7 @@ def GoldenSection(param1,update,y1,y2,y1notnan,y2notnan,ybothnotnan,n,nboth,N,x,
             step2=thetainv*step1+oneminthetainv*step4
             # calculate log likelihood at new mid-left and mid-right
             logL3=logL2
-            logL2=CalcLogL(param2,y1,y2,y1notnan,y2notnan,ybothnotnan,n,nboth,N,x,k,logLonly=True)
+            logL2=CalcLogL(param2,y1,y2,y1notnan,y2notnan,ybothnotnan,n,nboth,N,X,K,logLonly=True)
         #if mid-right val > mid-left val: set mid-left as left
         else:
             # set parameters accordingly
@@ -249,13 +262,13 @@ def GoldenSection(param1,update,y1,y2,y1notnan,y2notnan,ybothnotnan,n,nboth,N,x,
             step3=thetainv*step4+oneminthetainv*step1
             # calculate log likelihood at new mid-left and mid-right
             logL2=logL3
-            logL3=CalcLogL(param3,y1,y2,y1notnan,y2notnan,ybothnotnan,n,nboth,N,x,k,logLonly=True)
+            logL3=CalcLogL(param3,y1,y2,y1notnan,y2notnan,ybothnotnan,n,nboth,N,X,K,logLonly=True)
         if ((param2-param3)**2).mean()<TOL:
             converged=True
         i+=1
     return param2,i,step2
 
-def InitialiseParams(y1,y2,y1notnan,y2notnan,ybothnotnan,n1,n2,x,k):
+def InitialiseParams(y1,y2,y1notnan,y2notnan,ybothnotnan,n1,n2):
     # get x for observations where y1 resp. y2 is not missing
     x1=x[y1notnan,:]
     x2=x[y2notnan,:]
@@ -288,6 +301,8 @@ def InitialiseParams(y1,y2,y1notnan,y2notnan,ybothnotnan,n1,n2,x,k):
     return param0
 
 def GCAT():
+    # initialise control variables (and some derived variables) and number of people in PLINK file as globals
+    global x, k, nPLINK
     # print update
     logger.info('Reading data')
     # count number of SNPs from bim
@@ -306,8 +321,8 @@ def GCAT():
             raise ValueError('Index for last SNP to analyse based on option --snp exceeds number of SNPs in data')
     # read fam
     famdata=pd.read_csv(args.bfile+extFAM,sep=sep,header=None,names=['FID','IID','PID','MID','SEX','PHE'])
-    nG=famdata.shape[0]
-    logger.info('Found '+str(nG)+' individuals in '+args.bfile+extFAM)
+    nPLINK=famdata.shape[0]
+    logger.info('Found '+str(nPLINK)+' individuals in '+args.bfile+extFAM)
     # retain only FID and IID of fam data
     DATA=famdata.iloc[:,[0,1]]
     # read pheno file
@@ -330,41 +345,41 @@ def GCAT():
     if covars:
         # read covars
         xdata=pd.read_csv(args.covar,sep=sep)
-        # check if at least one covariate
+        # if no covariates found, throw error
         if xdata.shape[1]<3:
             raise ValueError(args.covar+' does not contain data on any covariates')
+        # print update
         logger.info('Found '+str(xdata.shape[0])+' individuals and '\
                      +str(xdata.shape[1]-2)+' control variables in '+args.covar)
         # left joint data with covariates
         DATA=pd.merge(left=DATA,right=xdata,how='left',left_on=['FID','IID'],right_on=['FID','IID'])
-        # retrieve matched covariates data baseline model, and add intercept
-        x=DATA.values[:,4:]
-        x=np.hstack((np.ones((x.shape[0],1)),x))
+        # retrieve matched covariates baseline model
+        x=np.hstack((np.ones((nPLINK,1)),DATA.values[:,4:]))
         xlabels=['intercept']+xdata.iloc[:,2:].columns.to_list()
-    else: # else set covars as intercept only
-        x=np.ones((DATA.shape[0],1))
+        k=x.shape[1]
+        # find observations where at least one covariate is missing
+        xmissing=np.isnan(x.sum(axis=1))
+        # count number of observations with nonmissing data on covariates; throw error if zero
+        nxnotnan=(~xmissing).sum()
+        if nxnotnan==0:
+            raise ValueError('No observations in '+args.covar\
+                            +' without any missingness that can be matched to '+args.bfile+extFAM)
+        # set y1,y2 to missing for rows where any covariate is missing, and set x to zero
+        x[xmissing,:]=0
+        y1[xmissing]=np.nan
+        y2[xmissing]=np.nan
+        # calculate lowest eigenvalue of X'X for observations without any missingness
+        (Dxtx,_)=np.linalg.eigh((x.T@x)/nxnotnan)
+        # if too low, throw error:
+        if min(Dxtx)<MINEVAL:
+            raise ValueError('Regressors in '+args.covar+' have too much multicollinearity. '\
+                            +'Did you add an intercept to your covariates file? Please remove it. '\
+                            +'Or do you have set of dummies that is perfectly collinear with intercept? Please remove one category. '\
+                            +'Recall: GCAT always adds intercept to model!')
+    else: # else set intercept as only covariate
+        k=1
+        x=np.ones((nPLINK,1))
         xlabels=['intercept']
-    # count number of regressors
-    k=x.shape[1]
-    # find observations where at least one covariate is missing
-    xmissing=np.isnan(x.sum(axis=1))
-    # set y1,y2 to missing for rows where any covariate is missing, and set x to zero
-    x[xmissing,:]=0
-    y1[xmissing]=np.nan
-    y2[xmissing]=np.nan
-    # count number of observations with nonmissing data on covariates; throw error if zero
-    nxnotnan=(~xmissing).sum()
-    if nxnotnan==0:
-        raise ValueError('No observations in '+args.covar\
-                         +' without any missingness that can be matched to '+args.bfile+extFAM)
-    # calculate lowest eigenvalue of X'X for observations without any missingness
-    (Dxtx,_)=np.linalg.eigh(((x[~xmissing,:].T)@(x[~xmissing,:]))/nxnotnan)
-    # if too low, throw error:
-    if min(Dxtx)<MINEVAL:
-        raise ValueError('Regressors in '+args.covar+' have too much multicollinearity. '\
-                         +'Did you add an intercept to your covariates file? Please remove it. '\
-                         +'Or do you have set of dummies that is perfectly collinear with intercept? Please remove one category. '\
-                         +'Recall: GCAT always adds intercept to model!')
     # find indices of non missing observations
     y1notnan=~np.isnan(y1)
     y2notnan=~np.isnan(y2)
@@ -386,10 +401,10 @@ def GCAT():
     n=y1ory2notnan.sum()
     # initialise parameters baseline model
     logger.info('Initialising baseline model (i.e. without any SNPs)')
-    param0=InitialiseParams(y1,y2,y1notnan,y2notnan,ybothnotnan,n1,n2,x,k)
+    param0=InitialiseParams(y1,y2,y1notnan,y2notnan,ybothnotnan,n1,n2)
     # estimate baseline model
     logger.info('Estimating baseline model')
-    (param0,logL0,_,_,_,_,converged0)=Newton(param0,y1,y2,y1notnan,y2notnan,ybothnotnan,n,nboth,N,x,k,linesearch=True)
+    (param0,logL0,_,_,_,_,converged0)=Newton(param0,y1,y2,y1notnan,y2notnan,ybothnotnan,n,nboth,N,linesearch=True)
     # write baseline model estimates to output file
     pd.DataFrame(param0,columns=['ALPHA1','ALPHA2','BETA1','BETA2','GAMMA'],\
                  index=xlabels).to_csv(args.out+extBASE,sep=sep)                     
@@ -397,9 +412,9 @@ def GCAT():
     if not(converged0):
         raise RuntimeError('Estimates baseline model (=no SNPs) not converged')
     # count number of full bytes per SNP
-    nb=int(nG/nperbyte)
+    nb=int(nPLINK/nperbyte)
     # compute how many individuals in remainder byte per SNP
-    nr=nG%nperbyte
+    nr=nPLINK%nperbyte
     # compute total bytes per SNP (full + remainder, if any)
     nbt=nb+(nr>0)
     # compute expected number of bytes in .bed file: 3 magic bytes + data
@@ -473,8 +488,8 @@ def GCAT():
     Mr=Mt%RESULTSMBLOCK
     Bt=Bc+(Mr>0)
     # set lambda function for analysis per SNP
-    analysej=lambda j:AnalyseOneSNP(pbar,j,nbt,roundedn,ids,nG,param0,logL0\
-                                    ,y1,y2,y1notnan,y2notnan,ybothnotnan,y1ory2notnan,n,nboth,N,x,k)
+    analysej=lambda j:AnalyseOneSNP(pbar,j,nbt,roundedn,ids,param0,logL0\
+                                    ,y1,y2,y1notnan,y2notnan,ybothnotnan,y1ory2notnan,n,nboth,N)
     # initialise progress bar
     pbar=tqdm(total=Mt)
     # for each block
@@ -493,8 +508,8 @@ def GCAT():
     # close connections to assoc file
     connassoc.close()
 
-def AnalyseOneSNP(pbar,j,nbt,roundedn,ids,nG,param0,logL0\
-                  ,y1,y2,y1notnan,y2notnan,ybothnotnan,y1ory2notnan,n,nboth,N,x,k):
+def AnalyseOneSNP(pbar,j,nbt,roundedn,ids,param0,logL0\
+                  ,y1,y2,y1notnan,y2notnan,ybothnotnan,y1ory2notnan,n,nboth,N):
     # connect to bed file
     connbed=open(args.bfile+extBED,'rb')
     # go to starting point of jth SNP in BED file
@@ -513,16 +528,15 @@ def AnalyseOneSNP(pbar,j,nbt,roundedn,ids,nG,param0,logL0\
         g[ids[0:nbt]+i]=gbytes-(gbytesleft<<2)
         # keep part of byte that is left
         gbytes=gbytesleft
-    # cast genotypes to float
-    g=g.astype(dtype=np.float64)
-    # recode genotype, where 0=homozygote A1, 1=heterozygote, 2=homozygote A2; np.nan=missing
-    g[g==1]=np.nan
+    # drop rows corresponding to empty bits of last byte for each SNP
+    g=g[0:nPLINK]
+    # find rows with missing genotype
+    gisnan=(g==1)
+    # set missing values to zero
+    g[gisnan]=0
+    # recode genotype, where 0=homozygote A1, 1=heterozygote, 2=homozygote A2
     g[g==2]=1
     g[g==3]=2
-    # drop rows corresponding to empty bits of last byte for each SNP
-    g=g[0:nG]
-    # find rows where genotype is missing
-    gisnan=np.isnan(g)
     # count number of nonmissing genotypes
     ngeno=(~gisnan).sum()
     # initialise empirical allele frequency and HWE pval as NaN
@@ -531,13 +545,13 @@ def AnalyseOneSNP(pbar,j,nbt,roundedn,ids,nG,param0,logL0\
     # if at least 1 nonmissing genotype
     if ngeno>0:
         # calculate empirical frequency
-        eaf=(np.nanmean(g))/2
+        eaf=((g[~gisnan]).mean())/2
         # if empirical frequency is not precisely zero or one
         if (eaf*(1-eaf))!=0:
             # calculate counts of homozygotes and heterozygotes
-            n0=(g==0).sum()
-            n1=(g==1).sum()
-            n2=(g==2).sum()
+            n0=(g[~gisnan]==0).sum()
+            n1=(g[~gisnan]==1).sum()
+            n2=(g[~gisnan]==2).sum()
             # calculate expected counts
             en0=((1-eaf)**2)*ngeno
             en1=(2*eaf*(1-eaf))*ngeno
@@ -547,9 +561,6 @@ def AnalyseOneSNP(pbar,j,nbt,roundedn,ids,nG,param0,logL0\
             hweP=1-stats.chi2.cdf(hwe,1)
     # initialise SNP effects at zero
     param1=np.vstack((param0.copy(),np.zeros((1,5))))
-    # add SNP to matrix of regressors
-    xs=np.hstack((x.copy(),g[:,None]))
-    ks=k+1
     # make necessary copies of data for SNP-specific analysis
     y1s=y1.copy()
     y2s=y2.copy()
@@ -557,8 +568,7 @@ def AnalyseOneSNP(pbar,j,nbt,roundedn,ids,nG,param0,logL0\
     y2notnans=y2notnan.copy()
     ybothnotnans=ybothnotnan.copy()
     y1ory2notnans=y1ory2notnan.copy()
-    # set y1, y2 to missing and x to 0 for individuals with missing genotype
-    xs[gisnan,:]=0
+    # set y1 and y2 to missing for individuals with missing genotype
     y1s[gisnan]=np.nan
     y2s[gisnan]=np.nan
     y1notnans[gisnan]=False
@@ -573,19 +583,25 @@ def AnalyseOneSNP(pbar,j,nbt,roundedn,ids,nG,param0,logL0\
     Ns=n1s+n2s
     # apply Newton's method, provided nboth>=MINN
     if nboths>=MINN:
-        (param1,logL1,grad1,H1,G1,D1,converged1)=Newton(param1,y1s,y2s,y1notnans,y2notnans,ybothnotnans,ns,nboths,Ns,xs,ks,silent=True)
+        (param1,logL1,grad1,H1,G1,D1,converged1)=Newton(param1,y1s,y2s,y1notnans,y2notnans,ybothnotnans,ns,nboths,Ns,g=g,gisnan=gisnan,silent=True)
     else: # else don't even try
         (param1,logL1,grad1,H1,G1,D1,converged1)=(None,None,None,None,None,[0],False)
     # calculate and store estimates, standard errors, etc.
     outputline=CalculateStats(ngeno,eaf,hweP,param1,logL1,logL0,H1,G1,D1,converged1,j\
-                              ,y1notnans,y2notnans,ybothnotnans,n1s,n2s,ns,nboths,Ns,xs,ks)
+                              ,y1notnans,y2notnans,ybothnotnans,n1s,n2s,ns,nboths,Ns,g,gisnan)
     # update progress bar
     pbar.update(1)
     # return output line with results
     return outputline
 
 def CalculateStats(ngeno,eaf,hweP,param1,logL1,logL0,H1,G1,D1,converged1,j\
-                   ,y1notnans,y2notnans,ybothnotnans,n1s,n2s,ns,nboths,Ns,xs,ks):
+                   ,y1notnans,y2notnans,ybothnotnans,n1s,n2s,ns,nboths,Ns,g,gisnan):
+    # combine SNP and control variables into grand X matrix
+    X=np.hstack((x,g[:,None]))
+    # ensure rows of X are zero for observations where genotype is missing
+    X[gisnan,:]=0
+    # set number of regressors to no. of control variables + 1 (for the SNP)
+    K=k+1
     # read line from bim file, strip trailing newline, split by tabs
     snpline=linecache.getline(args.bfile+extBIM,j).rstrip(eol).split(sep)
     # get chromosome number, snp ID, baseline allele, and effect allele
@@ -602,28 +618,28 @@ def CalculateStats(ngeno,eaf,hweP,param1,logL1,logL0,H1,G1,D1,converged1,j\
     nanfields=28*nanfield
     # if converged and Hessian pd, calculate stats and write to assoc file
     if converged1 and min(D1)>MINEVAL:
-        invH1=np.linalg.inv(H1.reshape((ks*5,ks*5)))
-        GGT1=(G1.reshape((ks*5,G1.shape[2])))@((G1.reshape((ks*5,G1.shape[2]))).T)
+        invH1=np.linalg.inv(H1.reshape((K*5,K*5)))
+        GGT1=(G1.reshape((K*5,G1.shape[2])))@((G1.reshape((K*5,G1.shape[2]))).T)
         param1Var=invH1@GGT1@invH1
-        param1SE=((np.diag(param1Var))**0.5).reshape((ks,5))
+        param1SE=((np.diag(param1Var))**0.5).reshape((K,5))
         # calculate average partial effect on expectations, stdevs and correlation
-        b1Var=(param1Var.reshape((ks,5,ks,5)))[:,2,:,2]
-        b2Var=(param1Var.reshape((ks,5,ks,5)))[:,3,:,3]
-        sig1=np.exp((xs*param1[None,:,2]).sum(axis=1))
-        sig2=np.exp((xs*param1[None,:,3]).sum(axis=1))
+        b1Var=(param1Var.reshape((K,5,K,5)))[:,2,:,2]
+        b2Var=(param1Var.reshape((K,5,K,5)))[:,3,:,3]
+        sig1=np.exp((X*param1[None,:,2]).sum(axis=1))
+        sig2=np.exp((X*param1[None,:,3]).sum(axis=1))
         snpAPEsig1=param1[-1,2]*sig1[y1notnans].mean()
         snpAPEsig2=param1[-1,3]*sig2[y2notnans].mean()
-        deltaAPEsig1=param1[-1,2]*(xs*sig1[:,None])[y1notnans,:].mean(axis=0)
-        deltaAPEsig2=param1[-1,3]*(xs*sig2[:,None])[y2notnans,:].mean(axis=0)
+        deltaAPEsig1=param1[-1,2]*(X*sig1[:,None])[y1notnans,:].mean(axis=0)
+        deltaAPEsig2=param1[-1,3]*(X*sig2[:,None])[y2notnans,:].mean(axis=0)
         deltaAPEsig1[-1]=sig1[y1notnans].mean()+deltaAPEsig1[-1]
         deltaAPEsig2[-1]=sig2[y2notnans].mean()+deltaAPEsig2[-1]
         snpAPEsig1SE=(deltaAPEsig1@b1Var@deltaAPEsig1)**0.5
         snpAPEsig2SE=(deltaAPEsig2@b2Var@deltaAPEsig2)**0.5
-        gcVar=(param1Var.reshape((ks,5,ks,5)))[:,4,:,4]
-        delta=np.exp((xs*param1[None,:,4]).sum(axis=1))
+        gcVar=(param1Var.reshape((K,5,K,5)))[:,4,:,4]
+        delta=np.exp((X*param1[None,:,4]).sum(axis=1))
         snpAPErho=param1[-1,4]*(2*delta/((delta+1)**2))[ybothnotnans].mean()
         deltaAPErho=2*param1[-1,4]\
-            *(xs*(((1-delta)/((1+delta)**3))[:,None]))[ybothnotnans,:].mean(axis=0)
+            *(X*(((1-delta)/((1+delta)**3))[:,None]))[ybothnotnans,:].mean(axis=0)
         deltaAPErho[-1]=(2*delta/((delta+1)**2))[ybothnotnans].mean()+deltaAPErho[-1]
         snpAPErhoSE=(deltaAPErho@gcVar@deltaAPErho)**0.5
         # get SNP effect, standard error, inferences
