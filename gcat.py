@@ -153,7 +153,7 @@ def CalcLogL(param,logLonly=False):
                 H[:,j,:,i]=H[:,i,:,j]
         return logL,grad,H,G
 
-def Newton(param,silent=False):
+def Newton(param,silent=False,linesearch=False):
     # set iteration counter to zero and convergence to false
     i=0
     converged=False
@@ -186,14 +186,21 @@ def Newton(param,silent=False):
             # set convergence to true and calculate sampling variance
             converged=True
         else:
-            # perform golden section to get new parameters estimates
-            (param,j,step)=GoldenSection(param,update.reshape((k,5)))
+            if linesearch:
+                # perform golden section to get new parameters estimates
+                (param,j,step)=GoldenSection(param,update.reshape((k,5)))
+            else:
+                # just apply Newton step directly
+                param+=update.reshape((k,5))
             # update iteration counter
             i+=1
             # print update if not silent
             if not(silent):
-                logger.info('Newton iteration '+str(i)+': logL='+str(logL)+'; '\
-                      +str(j)+' line-search steps, yielding step size = '+str(step))
+                if linesearch:
+                    logger.info('Newton iteration '+str(i)+': logL='+str(logL)+'; '\
+                        +str(j)+' line-search steps, yielding step size = '+str(step))
+                else:
+                    logger.info('Newton iteration '+str(i)+': logL='+str(logL))
     return param,logL,grad,H,G,D,converged
 
 def GoldenSection(param1,update):
@@ -384,7 +391,7 @@ def GCAT():
     param0=InitialiseParams()
     # estimate baseline model
     logger.info('Estimating baseline model')
-    (param0,logL0,_,_,_,_,converged0)=Newton(param0)
+    (param0,logL0,_,_,_,_,converged0)=Newton(param0,linesearch=True)
     # write baseline model estimates to output file
     pd.DataFrame(param0,columns=['ALPHA1','ALPHA2','BETA1','BETA2','GAMMA'],\
                  index=xlabels).to_csv(args.out+extBASE,sep=sep)                     
@@ -966,6 +973,8 @@ def ParseInputArguments():
                     help = 'name of covariate file: should be comma-, space-, or tab-separated, with one row per individual, with FID and IID as first two fields, followed by a field per covariate; first row must contain labels (e.g. FID IID AGE AGESQ PC1 PC2 PC3 PC4 PC5); requires --pheno to be specified; WARNING: do not include an intercept in your covariate file, because GCAT always adds an intercept itself')
     parser.add_argument('--simul-only', action = 'store_true',
                     help = 'option to simulate data only (i.e. no analysis of simulated data); cannot be combined with --pheno')
+    parser.add_argument('--snp', metavar = '', default = None, type = positive_int, nargs= '+',
+                    help = '\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\bINTEGER INTEGER option to analyse only SNP with index j=s,...,t, where s=1st integer and t=2nd integer; cannot be combined with --simul-only')
     parser.add_argument('--out', metavar = 'PREFIX', default = None, type = str,
                     help = 'prefix of output files')
     try:
@@ -1116,6 +1125,13 @@ def CheckInputArgs():
             raise SyntaxError('--seed-pheno must be specified when simulating phenotypes')
         if args.seed_effects is None:
             raise SyntaxError('--seed-effects must be specified when simulating phenotypes')
+    if args.simul_only and args.snp is not None:
+        raise SyntaxError('--simul-only cannot be combined with --snp')
+    if args.snp is not None:
+        if len(args.snp)!=2:
+            raise SyntaxError('--snp needs to be followed by two integers')
+        elif args.snp[1]<args.snp[0]:
+            raise SyntaxError('--snp requires 1st integer <= 2nd integer')
 
 def FindBlockSize():
     global dimg
