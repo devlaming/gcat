@@ -6,6 +6,7 @@ import os, psutil
 import numpy as np
 import mmap
 import pandas as pd
+import linecache
 from tqdm import tqdm
 from scipy import stats
 from functools import reduce
@@ -292,6 +293,17 @@ def GCAT():
     # count number of SNPs from bim
     M=CountLines(args.bfile+extBIM)
     logger.info('Found '+str(M)+ ' SNPs in '+args.bfile+extBIM)
+    # initialise starting point and end point to analyses
+    Mstart=1
+    Mend=M
+    # if SNP range has been provided
+    if args.snp is not None:
+        Mstart=args.snp[0]
+        Mend=args.snp[1]
+        if Mstart>M:
+            raise ValueError('Index for first SNP to analyse based on option --snp exceeds number of SNPs in data')
+        if Mend>M:
+            raise ValueError('Index for last SNP to analyse based on option --snp exceeds number of SNPs in data')
     # read fam
     famdata=pd.read_csv(args.bfile+extFAM,sep=sep,header=None,names=['FID','IID','PID','MID','SEX','PHE'])
     nG=famdata.shape[0]
@@ -419,9 +431,8 @@ def GCAT():
     roundedn=nbt*nperbyte
     # get rowid of first two bits per byte being read
     ids=nperbyte*np.arange(nbt)
-    # connect to read bed and bim files
+    # connect to read bed file
     connbed=open(args.bfile+extBED,'rb')
-    connbim=open(args.bfile+extBIM,'r')
     # check if first three bytes bed file are correct
     if ord(connbed.read(1))!=(ord(binBED1)) or ord(connbed.read(1))!=(ord(binBED2)) or ord(connbed.read(1))!=(ord(binBED3)):
         raise ValueError(args.bfile+extBED+' not a valid PLINK .bed file')
@@ -468,7 +479,10 @@ def GCAT():
                     +'APE_CORR_'+y1label+'_'+y2label+sep\
                     +'SE_APE_CORR_'+y1label+'_'+y2label+eol)
     # for each SNP
-    for j in tqdm(range(M)):
+    for j in tqdm(range(Mstart,Mend+1)):
+        # go to starting point of jth SNP in BED file
+        offset=3+(nbt*(j-1))
+        connbed.seek(offset,0)
         # read bytes
         gbytes=np.frombuffer(connbed.read(nbt),dtype=np.uint8)
         # initialise genotypes for this read as empty
@@ -543,15 +557,14 @@ def GCAT():
         else: # else don't even try
             (param1,logL1,grad1,H1,G1,D1,converged1)=(None,None,None,None,None,[0],False)
         # calculate and store estimates, standard errors, etc.
-        CalculateStats(ngeno,eaf,hweP,param1,logL1,logL0,H1,G1,D1,converged1,connbim,connassoc)
-    # close connections to bed, bim, and assoc files
+        CalculateStats(ngeno,eaf,hweP,param1,logL1,logL0,H1,G1,D1,converged1,connassoc,j)
+    # close connections to bed and assoc files
     connbed.close()
-    connbim.close()
-    connassoc.close()    
+    connassoc.close()
 
-def CalculateStats(ngeno,eaf,hweP,param1,logL1,logL0,H1,G1,D1,converged1,connbim,connassoc):
+def CalculateStats(ngeno,eaf,hweP,param1,logL1,logL0,H1,G1,D1,converged1,connassoc,j):
     # read line from bim file, strip trailing newline, split by tabs
-    snpline=connbim.readline().rstrip(eol).split(sep)
+    snpline=linecache.getline(args.bfile+extBIM,j).rstrip(eol).split(sep)
     # get chromosome number, snp ID, baseline allele, and effect allele
     snpchr=snpline[0]
     snpid=snpline[1]
