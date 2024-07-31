@@ -617,6 +617,8 @@ def SimulateG():
     # get n and M
     n=args.n
     M=args.m
+    # initialise random-numer generator
+    rng=np.random.default_rng(args.seed_geno)
     # give update
     logger.info('Simulating data on '+str(M)+' SNPs for '+str(n)+' individuals,')
     logger.info('exporting to PLINK binary files '+args.out+extBED+','+extBIM+','+extFAM)
@@ -721,6 +723,9 @@ def CountLines(filename):
     return lines
 
 def SimulateY():
+    # initialise random-numer generators
+    rng=np.random.default_rng(args.seed_pheno)
+    rngeffects=np.random.default_rng(args.seed_effects)
     # print update
     logger.info('Reading PLINK binary files '+args.bfile+extBED+','+extBIM+','+extFAM)
     # get n and M
@@ -813,15 +818,15 @@ def SimulateY():
         # calculate standardised SNPs
         gs=(g-2*(eaf[None,:]))/(((2*eaf*(1-eaf))**0.5)[None,:])
         # draw factors for SNP effects on expectations
-        gf1=rng.normal(size=m)
-        gf2=rng.normal(size=m)
+        gf1=rngeffects.normal(size=m)
+        gf2=rngeffects.normal(size=m)
         # draw correlated SNP effects on expectations
         alpha1=gf1*((args.h2y1/M)**0.5)
         alpha2=((args.rg*gf1)+(((1-(args.rg**2))**0.5)*gf2))*((args.h2y2/M)**0.5)
         # draw SNP effects on variances and correlation
-        beta1=rng.normal(size=m)*((args.h2sig1/M)**0.5)
-        beta2=rng.normal(size=m)*((args.h2sig2/M)**0.5)
-        gamma=args.rhoband*(rng.normal(size=m)*((args.h2rho/M)**0.5))
+        beta1=rngeffects.normal(size=m)*((args.h2sig1/M)**0.5)
+        beta2=rngeffects.normal(size=m)*((args.h2sig2/M)**0.5)
+        gamma=args.rhoband*(rngeffects.normal(size=m)*((args.h2rho/M)**0.5))
         # update linear parts
         xalpha1+=((gs*alpha1[None,:]).sum(axis=1))
         xalpha2+=((gs*alpha2[None,:]).sum(axis=1))
@@ -931,6 +936,10 @@ def ParseInputArguments():
                     help = '(simulation) number of individuals; at least 1000')
     parser.add_argument('--m', metavar = 'INTEGER', default = None, type = positive_int, 
                     help = '(simulation) number of SNPs; at least 100')
+    parser.add_argument('--seed-geno', metavar = 'INTEGER', default = None, type = positive_int,
+                    help = '(simulation) seed for random-number generator for genotypes')
+    parser.add_argument('--bfile', metavar = 'PREFIX', default = None, type = str,
+                    help = 'prefix of PLINK binary files; cannot be combined with --n, --m, and/or --seed-geno')
     parser.add_argument('--h2y1', metavar = 'NUMBER', default = None, type = number_between_0_1,
                     help = '(simulation) heritability of Y1; between 0 and 1')
     parser.add_argument('--h2y2', metavar = 'NUMBER', default = None, type = number_between_0_1,
@@ -947,14 +956,14 @@ def ParseInputArguments():
                     help = '(simulation) average Corr(Error term Y1,Error term Y2); between -1 and 1')
     parser.add_argument('--rhoband', metavar = 'NUMBER', default = None, type = number_between_0_1,
                     help = '(simulation) probabilistic bandwidth of correlation around level specified using --rhomean; between 0 and 1')
-    parser.add_argument('--seed', metavar = 'INTEGER', default = None, type = positive_int,
-                    help = '(simulation) seed for random-number generator, to control replicability')
-    parser.add_argument('--bfile', metavar = 'PREFIX', default = None, type = str,
-                    help = 'prefix of PLINK binary files; cannot be combined with --n and/or --m')
+    parser.add_argument('--seed-effects', metavar = 'INTEGER', default = None, type = positive_int,
+                    help = '(simulation) seed for random-number generator for unscaled true effects of standardised SNPs')
+    parser.add_argument('--seed-pheno', metavar = 'INTEGER', default = None, type = positive_int,
+                    help = '(simulation) seed for random-number generator for phenotypes')
     parser.add_argument('--pheno', metavar = 'FILENAME', default = None, type = str,
-                    help = 'name of phenotype file: should be comma-, space-, or tab-separated, with one row per individual, with FID and IID as first two fields, followed by two fields for phenotypes Y1 and Y2; first row must contain labels (e.g. FID IID HEIGHT log(BMI)); requires --bfile to be specified; cannot be combined with --h2y1, --h2y2, --rg, --h2sig1, --h2sig2, --h2rho, --rhomean, --rhoband, and/or --seed')
+                    help = 'name of phenotype file: should be comma-, space-, or tab-separated, with one row per individual, with FID and IID as first two fields, followed by two fields for phenotypes Y1 and Y2; first row must contain labels (e.g. FID IID HEIGHT log(BMI)); requires --bfile to be specified; cannot be combined with --h2y1, --h2y2, --rg, --h2sig1, --h2sig2, --h2rho, --rhomean, --rhoband, --seed-effects, and/or --seed-pheno')
     parser.add_argument('--covar', metavar = 'FILENAME', default = None, type = str,
-                    help = 'name of covariate file: should be comma-, space-, or tab-separated, with one row per individual, with FID and IID as first two fields, followed by a field per covariate; first row must contain labels (e.g. FID IID AGE AGESQ PC1 PC2 PC3 PC4 PC5); requires --bfile and --pheno to be specified; WARNING: do not include an intercept in your covariate file, because GCAT always adds an intercept itself')
+                    help = 'name of covariate file: should be comma-, space-, or tab-separated, with one row per individual, with FID and IID as first two fields, followed by a field per covariate; first row must contain labels (e.g. FID IID AGE AGESQ PC1 PC2 PC3 PC4 PC5); requires --pheno to be specified; WARNING: do not include an intercept in your covariate file, because GCAT always adds an intercept itself')
     parser.add_argument('--simul-only', action = 'store_true',
                     help = 'option to simulate data only (i.e. no analysis of simulated data); cannot be combined with --pheno')
     parser.add_argument('--out', metavar = 'PREFIX', default = None, type = str,
@@ -1091,14 +1100,22 @@ def CheckInputArgs():
             raise SyntaxError('--rhomean cannot be combined with --pheno')
         if args.rhoband is not None:
             raise SyntaxError('--rhoband cannot be combined with --pheno')
-    if not(simulg) and not(simuly):
-        if args.seed is not None:
-            raise SyntaxError('--seed may not be specified when neither genetic nor phenotype data is simulated')
-    if simulg or simuly:
-        if args.seed is None:
-            raise SyntaxError('--seed must be specified when simulating data')
-        global rng
-        rng=np.random.default_rng(args.seed)
+    if not(simulg):
+        if args.seed_geno is not None:
+            raise SyntaxError('--seed-geno may not be combined with --bfile')
+    if not(simuly):
+        if args.seed_pheno is not None:
+            raise SyntaxError('--seed-pheno may not be combined with --pheno')
+        if args.seed_effects is not None:
+            raise SyntaxError('--seed-effects may not be combined with --pheno')
+    if simulg:
+        if args.seed_geno is None:
+            raise SyntaxError('--seed-geno must be specified when simulating genotypes')
+    if simuly:
+        if args.seed_pheno is None:
+            raise SyntaxError('--seed-pheno must be specified when simulating phenotypes')
+        if args.seed_effects is None:
+            raise SyntaxError('--seed-effects must be specified when simulating phenotypes')
 
 def FindBlockSize():
     global dimg
