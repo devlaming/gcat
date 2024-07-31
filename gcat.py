@@ -1174,7 +1174,7 @@ def FindBlockSize():
     # assigning 1% of available RAM to storage of raw genotypes
     # calculate how many raw genotypes can be held in RAM
     availtotal=(psutil.virtual_memory()[1])
-    dimg=int(0.01*availtotal)
+    dimg=int(0.002*availtotal)
 
 def main():
     # set parser, logger, memory tracker as globals
