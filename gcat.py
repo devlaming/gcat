@@ -67,8 +67,9 @@ def CalcLogL(param,y1,y2,y1notnan,y2notnan,ybothnotnan,n,nboth,N,X,K,mode=3):
        1=logL
        2=logL,gradient
        3=logL,gradient,Hessian
-       4=G (iid-specific contribution to grad); at end of Newton algo
-       5=G, Hessian; at end of BFGS algo
+       4=G (iid-specific contribution to grad) only; at end of Newton algo
+       5=G and Hessian only; at end of BFGS algo
+       6=last row of gradient (i.e. corresponding to given SNP); at start of BFGS
     '''
     # calculate log-likelihood constant
     cons=N*np.log(2*np.pi)
@@ -103,6 +104,8 @@ def CalcLogL(param,y1,y2,y1notnan,y2notnan,ybothnotnan,n,nboth,N,X,K,mode=3):
             return None
         elif mode==5:
             return None,None
+        elif mode==6:
+            return None
     # calculate errors 
     e1=y1-linpart[:,0]
     e2=y2-linpart[:,1]
@@ -119,78 +122,82 @@ def CalcLogL(param,y1,y2,y1notnan,y2notnan,ybothnotnan,n,nboth,N,X,K,mode=3):
     r2=(e2/sig2)
     # calculate 1-rsq
     unexp=1-(rho**2)
-    # calculate log|V| and quadratic term
-    logdetV=2*nboth*np.log(2)+linpart[ybothnotnan,4].sum()\
-        +2*(linpart[y1notnan,2].sum()+linpart[y2notnan,3].sum())\
-        -2*((np.log(delta[ybothnotnan]+1)).sum())
-    quadratic=(((r1**2)+(r2**2)-2*(rho*r1*r2))/unexp).sum()
-    # calculate logL/n
-    logL=-0.5*(cons+logdetV+quadratic)/n
-    # if just interested in logL
-    if mode==1:
-        return logL
+    # calculate logL only if we really need it
+    if mode==1 or mode==2 or mode==3:
+        # calculate log|V| and quadratic term
+        logdetV=2*nboth*np.log(2)+linpart[ybothnotnan,4].sum()\
+            +2*(linpart[y1notnan,2].sum()+linpart[y2notnan,3].sum())\
+            -2*((np.log(delta[ybothnotnan]+1)).sum())
+        quadratic=(((r1**2)+(r2**2)-2*(rho*r1*r2))/unexp).sum()
+        # calculate logL/n
+        logL=-0.5*(cons+logdetV+quadratic)/n
+        # if just interested in logL
+        if mode==1:
+            return logL
+    # initialise weights matrix for gradient
+    Wg=np.empty((nPLINK,5))
+    # calculate weights matrix for gradient
+    Wg[:,0]=((r1/sig1)-(rho*r2/sig1))/unexp
+    Wg[:,1]=((r2/sig2)-(rho*r1/sig2))/unexp
+    Wg[:,2]=(((r1**2)-(rho*r1*r2))/unexp)-1
+    Wg[:,3]=(((r2**2)-(rho*r1*r2))/unexp)-1
+    Wg[:,4]=(0.5*rho-0.5*((((delta**2)-1)/(4*delta))*(r1**2+r2**2)-(((delta**2+1)/(2*delta))*r1*r2)))
+    # set gradient=0 w.r.t. beta1 for missing y1 and idem w.r.t. beta2 for missing y2
+    Wg[~y1notnan,2]=0
+    Wg[~y2notnan,3]=0
+    # if just interested in G or H
+    if mode==4 or mode==5:
+        # calculate individual-specific contribution to gradient/n as 3d array
+        G=((X.T[:,None,:])*(Wg.T[None,:,:]))/n
+        # if just interest in G, return that
+        if mode==4:
+            return G
+    elif mode==6:
+        gradlast=X[:,-1]@Wg
+        return gradlast
     else:
-        # initialise weights matrix for gradient
-        Wg=np.empty((nPLINK,5))
-        # calculate weights matrix for gradient
-        Wg[:,0]=((r1/sig1)-(rho*r2/sig1))/unexp
-        Wg[:,1]=((r2/sig2)-(rho*r1/sig2))/unexp
-        Wg[:,2]=(((r1**2)-(rho*r1*r2))/unexp)-1
-        Wg[:,3]=(((r2**2)-(rho*r1*r2))/unexp)-1
-        Wg[:,4]=(0.5*rho-0.5*((((delta**2)-1)/(4*delta))*(r1**2+r2**2)-(((delta**2+1)/(2*delta))*r1*r2)))
-        # set gradient=0 w.r.t. beta1 for missing y1 and idem w.r.t. beta2 for missing y2
-        Wg[~y1notnan,2]=0
-        Wg[~y2notnan,3]=0
-        # if just interested in G or H
-        if mode==4 or mode==5:
-            # calculate individual-specific contribution to gradient/n as 3d array
-            G=((X.T[:,None,:])*(Wg.T[None,:,:]))/n
-            # if just interest in G, return that
-            if mode==4:
-                return G
-        else:
-            # calculate gradient
-            grad=(X.T@Wg)/n
-            # if just interest in logL and grad, return those
-            if mode==2:
-                return logL,grad
-        # initialise weights array Hessian (nPLINK-by-5-by-5)
-        wH=np.empty((nPLINK,5,5))
-        # calculate weights array for Hessian
-        wH[:,0,0]=-1/(unexp*(sig1**2))
-        wH[:,1,1]=-1/(unexp*(sig2**2))
-        wH[:,0,1]=rho/(unexp*sig1*sig2)
-        wH[:,0,2]=(1/(sig1*unexp))*(rho*r2-2*r1)
-        wH[:,1,3]=(1/(sig2*unexp))*(rho*r1-2*r2)
-        wH[:,0,3]=(1/(sig1*unexp))*(rho*r2)
-        wH[:,1,2]=(1/(sig2*unexp))*(rho*r1)
-        wH[:,0,4]=(1/(sig1*unexp))*(rho*r1-((1+(rho**2))*(r2/2)))
-        wH[:,1,4]=(1/(sig2*unexp))*(rho*r2-((1+(rho**2))*(r1/2)))
-        wH[:,2,2]=-(1/unexp)*(2*(r1**2)-rho*r1*r2)
-        wH[:,3,3]=-(1/unexp)*(2*(r2**2)-rho*r1*r2)
-        wH[:,2,3]=-(1/unexp)*(-rho*r1*r2)
-        wH[:,2,4]=-((0.5*r1*r2)-((rho/unexp)*(r1**2)))
-        wH[:,3,4]=-((0.5*r1*r2)-((rho/unexp)*(r2**2)))
-        wH[:,4,4]=-((((((delta**2)+1)/(8*delta))*((r1**2)+(r2**2)))-((((delta**2)-1)/(4*delta))*(r1*r2)))-(unexp/4))
-        # set weight w.r.t. gamma twice to zero when either y1 and/or y2 is missing
-        wH[~ybothnotnan,4,4]=0
-        # initialise Hessian/n
-        H=np.empty((K,5,K,5))
-        # use symmetry to fill gaps in weights
-        for i in range(5):
-            for j in range(i,5):
-                # calculate Hessian/n
-                H[:,i,:,j]=(X.T@(X*wH[:,None,i,j]))/n
-                if j>i:
-                    # use symmetry to find out counterparts
-                    H[:,j,:,i]=H[:,i,:,j]
-        # if just interest in G and H, return that
-        if mode==5:
-            return G,H
-        else:
-            return logL,grad,H
+        # calculate gradient
+        grad=(X.T@Wg)/n
+        # if just interest in logL and grad, return those
+        if mode==2:
+            return logL,grad
+    # initialise weights array Hessian (nPLINK-by-5-by-5)
+    wH=np.empty((nPLINK,5,5))
+    # calculate weights array for Hessian
+    wH[:,0,0]=-1/(unexp*(sig1**2))
+    wH[:,1,1]=-1/(unexp*(sig2**2))
+    wH[:,0,1]=rho/(unexp*sig1*sig2)
+    wH[:,0,2]=(1/(sig1*unexp))*(rho*r2-2*r1)
+    wH[:,1,3]=(1/(sig2*unexp))*(rho*r1-2*r2)
+    wH[:,0,3]=(1/(sig1*unexp))*(rho*r2)
+    wH[:,1,2]=(1/(sig2*unexp))*(rho*r1)
+    wH[:,0,4]=(1/(sig1*unexp))*(rho*r1-((1+(rho**2))*(r2/2)))
+    wH[:,1,4]=(1/(sig2*unexp))*(rho*r2-((1+(rho**2))*(r1/2)))
+    wH[:,2,2]=-(1/unexp)*(2*(r1**2)-rho*r1*r2)
+    wH[:,3,3]=-(1/unexp)*(2*(r2**2)-rho*r1*r2)
+    wH[:,2,3]=-(1/unexp)*(-rho*r1*r2)
+    wH[:,2,4]=-((0.5*r1*r2)-((rho/unexp)*(r1**2)))
+    wH[:,3,4]=-((0.5*r1*r2)-((rho/unexp)*(r2**2)))
+    wH[:,4,4]=-((((((delta**2)+1)/(8*delta))*((r1**2)+(r2**2)))-((((delta**2)-1)/(4*delta))*(r1*r2)))-(unexp/4))
+    # set weight w.r.t. gamma twice to zero when either y1 and/or y2 is missing
+    wH[~ybothnotnan,4,4]=0
+    # initialise Hessian/n
+    H=np.empty((K,5,K,5))
+    # use symmetry to fill gaps in weights
+    for i in range(5):
+        for j in range(i,5):
+            # calculate Hessian/n
+            H[:,i,:,j]=(X.T@(X*wH[:,None,i,j]))/n
+            if j>i:
+                # use symmetry to find out counterparts
+                H[:,j,:,i]=H[:,i,:,j]
+    # if just interest in G and H, return that
+    if mode==5:
+        return G,H
+    else:
+        return logL,grad,H
 
-def Newton(param,y1,y2,y1notnan,y2notnan,ybothnotnan,n,nboth,N,X,K,silent=False,linesearch=True):
+def Newton(param,y1,y2,y1notnan,y2notnan,ybothnotnan,n,nboth,N,X,K,silent=False,linesearch=True,opg=False):
     # set iteration counter to zero and convergence to false
     i=0
     converged=False
@@ -240,9 +247,12 @@ def Newton(param,y1,y2,y1notnan,y2notnan,ybothnotnan,n,nboth,N,X,K,silent=False,
                         +str(j)+' line-search steps, yielding step size = '+str(step))
                 else:
                     logger.info('Newton iteration '+str(i)+': logL='+str(logL))
-    # calculate individual-specific contributions to gradient/n
-    G=CalcLogL(param,y1,y2,y1notnan,y2notnan,ybothnotnan,n,nboth,N,X,K,mode=4)
-    return param,logL,grad,H,G,D,converged
+    # calculat G for outer product gradient if required
+    if opg:
+        # calculate individual-specific contributions to gradient/n
+        G=CalcLogL(param,y1,y2,y1notnan,y2notnan,ybothnotnan,n,nboth,N,X,K,mode=4)
+        return param,logL,grad,H,G,D,converged
+    return param,logL,grad,H,D,converged
 
 def GoldenSection(param,logL,grad,update,y1,y2,y1notnan,y2notnan,ybothnotnan,n,nboth,N,X,K):
     # calculate update'grad
@@ -307,6 +317,8 @@ def GoldenSection(param,logL,grad,update,y1,y2,y1notnan,y2notnan,ybothnotnan,n,n
     return param4,i,step4
 
 def InitialiseParams(y1,y2,y1notnan,y2notnan,ybothnotnan,n1,n2):
+    # set parameters baseline model as global
+    global param0
     # get x for observations where y1 resp. y2 is not missing
     x1=x[y1notnan,:]
     x2=x[y2notnan,:]
@@ -336,11 +348,12 @@ def InitialiseParams(y1,y2,y1notnan,y2notnan,ybothnotnan,n1,n2):
     gc[0]=np.log((1+rhomean)/(1-rhomean))
     # collect and return initialised values
     param0=np.vstack((a1,a2,b1,b2,gc)).T
-    return param0
 
 def GCAT():
-    # initialise control variables (and some derived variables) and number of people in PLINK file as globals
+    # initialise (no. of) control variables and no. of people in PLINK file as globals
     global x, k, nPLINK
+    # also initialise estimates baseline model as global
+    global param0,logL0,grad0,H0,D0,converged0
     # print update
     logger.info('Reading data')
     # count number of SNPs from bim
@@ -439,10 +452,10 @@ def GCAT():
     n=y1ory2notnan.sum()
     # initialise parameters baseline model
     logger.info('Initialising baseline model (i.e. without any SNPs)')
-    param0=InitialiseParams(y1,y2,y1notnan,y2notnan,ybothnotnan,n1,n2)
+    InitialiseParams(y1,y2,y1notnan,y2notnan,ybothnotnan,n1,n2)
     # estimate baseline model
     logger.info('Estimating baseline model')
-    (param0,logL0,_,_,_,_,converged0)=Newton(param0,y1,y2,y1notnan,y2notnan,ybothnotnan,n,nboth,N,x,k)
+    (param0,logL0,grad0,H0,D0,converged0)=Newton(param0,y1,y2,y1notnan,y2notnan,ybothnotnan,n,nboth,N,x,k)
     # write baseline model estimates to output file
     pd.DataFrame(param0,columns=['ALPHA1','ALPHA2','BETA1','BETA2','GAMMA'],\
                  index=xlabels).to_csv(args.out+extBASE,sep=sep)                     
@@ -526,7 +539,7 @@ def GCAT():
     Mr=Mt%RESULTSMBLOCK
     Bt=Bc+(Mr>0)
     # set lambda function for analysis per SNP
-    analysej=lambda j:AnalyseOneSNP(pbar,j,nbt,roundedn,ids,param0,logL0\
+    analysej=lambda j:AnalyseOneSNP(pbar,j,nbt,roundedn,ids\
                                     ,y1,y2,y1notnan,y2notnan,ybothnotnan,y1ory2notnan,n,nboth,N)
     # initialise progress bar
     pbar=tqdm(total=Mt)
@@ -546,7 +559,7 @@ def GCAT():
     # close connections to assoc file
     connassoc.close()
 
-def AnalyseOneSNP(pbar,j,nbt,roundedn,ids,param0,logL0\
+def AnalyseOneSNP(pbar,j,nbt,roundedn,ids\
                   ,y1,y2,y1notnan,y2notnan,ybothnotnan,y1ory2notnan,n,nboth,N):
     # connect to bed file
     connbed=open(args.bfile+extBED,'rb')
@@ -629,9 +642,9 @@ def AnalyseOneSNP(pbar,j,nbt,roundedn,ids,param0,logL0\
         K=k+1
         # using BFGS or Newton's method, depending on input
         if args.bfgs:
-            (param1,logL1,grad1,H1,G1,D1,converged1)=BFGS(param1,y1s,y2s,y1notnans,y2notnans,ybothnotnans,ns,nboths,Ns,X,K,silent=True)
+            (_)=BFGS()
         else:
-            (param1,logL1,grad1,H1,G1,D1,converged1)=Newton(param1,y1s,y2s,y1notnans,y2notnans,ybothnotnans,ns,nboths,Ns,X,K,silent=True,linesearch=False)
+            (param1,logL1,grad1,H1,G1,D1,converged1)=Newton(param1,y1s,y2s,y1notnans,y2notnans,ybothnotnans,ns,nboths,Ns,X,K,silent=True,linesearch=False,opg=True)
     else: # else don't even try
         (param1,logL1,grad1,H1,G1,D1,converged1)=(None,None,None,None,None,[0],False)
     # calculate and store estimates, standard errors, etc.
