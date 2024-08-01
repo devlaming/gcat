@@ -240,8 +240,8 @@ def Newton(param,y1,y2,y1notnan,y2notnan,ybothnotnan,n,nboth,N,X,K,silent=False,
         # get Newton-Raphson update vector
         update=P@((((grad.reshape((K*5,1))).T@P)/Dadj).T)
         # calculate convergence criterion
-        msg=(update*grad.reshape((K*5,1))).sum()
-        # if convergence criterion met
+        msg=(update*grad.reshape((K*5,1))).mean()
+        # if RMSE of gradient, taking curvature into account, is less than 1E-6: converged
         if msg<TOL:
             # set convergence to true and calculate sampling variance
             converged=True
@@ -334,7 +334,7 @@ def GoldenSection(param,logL,grad,update,y1,y2,y1notnan,y2notnan,ybothnotnan,n,n
         return param4,i,step4,logL4,grad4
     return param4,i,step4
 
-def BFGS(param,y1,y2,y1notnan,y2notnan,ybothnotnan,n,nboth,N,X,K):
+def BFGS(param,y1,y2,y1notnan,y2notnan,ybothnotnan,n,nboth,N,X,K,section=False):
     silent=True
     linesearch=True
     snpmodel=True
@@ -365,8 +365,12 @@ def BFGS(param,y1,y2,y1notnan,y2notnan,ybothnotnan,n,nboth,N,X,K):
             i+=1
             # get BFGS update
             update=(-AIH@grad.reshape((K*5,1)))
-            # perform golden section
-            (paramnew,j,stepsize,logLnew,gradnew)=GoldenSection(param,logL,grad,update.reshape((K,5)),y1,y2,y1notnan,y2notnan,ybothnotnan,n,nboth,N,X,K,gradatend=True)
+            # if golden section used
+            if section:
+                (paramnew,j,stepsize,logLnew,gradnew)=GoldenSection(param,logL,grad,update.reshape((K,5)),y1,y2,y1notnan,y2notnan,ybothnotnan,n,nboth,N,X,K,gradatend=True)
+            else:
+                paramnew=param+(update.reshape((K,5)))
+                (logLnew,gradnew)=CalcLogL(paramnew,y1,y2,y1notnan,y2notnan,ybothnotnan,n,nboth,N,X,K,mode=2)
             # calculate quantities needed for BFGS
             s=(paramnew-param).reshape((K*5,1))
             y=(gradnew-grad).reshape((K*5,1))
