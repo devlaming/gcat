@@ -21,6 +21,7 @@ MINVAR=0.01
 MINEVAL=1E-3
 MINN=10
 MINM=1
+ARMIJO=1E-4
 thetainv=2/(1+5**0.5)
 oneminthetainv=1-thetainv
 RESULTSMBLOCK=2000
@@ -59,7 +60,16 @@ HEADER += '| Vrije Universiteit Amsterdam                             |'+eol
 HEADER += '| GNU General Public License v3                            |'+eol
 HEADER += '------------------------------------------------------------'+eol
 
-def CalcLogL(param,y1,y2,y1notnan,y2notnan,ybothnotnan,n,nboth,N,X,K,logLonly=False):
+def CalcLogL(param,y1,y2,y1notnan,y2notnan,ybothnotnan,n,nboth,N,X,K,mode=3):
+    ''''
+    Calulcation log-likelihood bivariate model
+     Mode: tells function what to calculate and return
+       1=logL
+       2=logL,gradient
+       3=logL,gradient,Hessian
+       4=G (iid-specific contribution to grad); at end of Newton algo
+       5=G, Hessian; at end of BFGS algo
+    '''
     # calculate log-likelihood constant
     cons=N*np.log(2*np.pi)
     # calculate linear parts
@@ -83,10 +93,16 @@ def CalcLogL(param,y1,y2,y1notnan,y2notnan,ybothnotnan,n,nboth,N,X,K,logLonly=Fa
     # if halt=True: set -np.inf as log-likelihood
     if halt:
         logL=-np.inf
-        if logLonly:
+        if mode==1:
             return logL
-        else:
-            return logL,None,None,None
+        elif mode==2:
+            return logL,None
+        elif mode==3:
+            return logL,None,None
+        elif mode==4:
+            return None
+        elif mode==5:
+            return None,None
     # calculate errors 
     e1=y1-linpart[:,0]
     e2=y2-linpart[:,1]
@@ -110,51 +126,69 @@ def CalcLogL(param,y1,y2,y1notnan,y2notnan,ybothnotnan,n,nboth,N,X,K,logLonly=Fa
     quadratic=(((r1**2)+(r2**2)-2*(rho*r1*r2))/unexp).sum()
     # calculate logL/n
     logL=-0.5*(cons+logdetV+quadratic)/n
-    if logLonly:
+    # if just interested in logL
+    if mode==1:
         return logL
     else:
-        # define gradient/n per observation as 3d array
-        G=np.zeros((K,5,nPLINK))
-        G[:,0,:]=((X*((((r1/sig1)-(rho*r2/sig1))/unexp)[:,None]))/n).T
-        G[:,1,:]=((X*((((r2/sig2)-(rho*r1/sig2))/unexp)[:,None]))/n).T
-        G[:,2,:]=((X*(((((r1**2)-(rho*r1*r2))/unexp)[:,None])-1))/n).T
-        G[:,3,:]=((X*(((((r2**2)-(rho*r1*r2))/unexp)[:,None])-1))/n).T
-        G[:,4,:]=((X*((0.5*rho-0.5*((((delta**2)-1)/(4*delta))*(r1**2+r2**2)\
-                                    -(((delta**2+1)/(2*delta))\
-                                      *r1*r2)))[:,None]))/n).T
-        # set gradient to zero w.r.t. beta1 for observation with missing y1
-        # and idem w.r.t. beta2 if y2 is missing
-        G[:,2,~y1notnan]=0
-        G[:,3,~y2notnan]=0
-        # calculate gradient/n by summing gradient per obs along observations
-        grad=G.sum(axis=2)
-        # initialise hessian/n
-        H=np.zeros((K,5,K,5))
-        # get entries hessian/n
-        H[:,0,:,0]=-(X.T@(X*((1/(unexp*(sig1**2)))[:,None])))/n
-        H[:,1,:,1]=-(X.T@(X*((1/(unexp*(sig2**2)))[:,None])))/n
-        H[:,0,:,1]=-(X.T@(X*((-rho/(unexp*sig1*sig2))[:,None])))/n
-        H[:,0,:,2]=(X.T@(X*(((1/(sig1*unexp))*(rho*r2-2*r1))[:,None])))/n
-        H[:,1,:,3]=(X.T@(X*(((1/(sig2*unexp))*(rho*r1-2*r2))[:,None])))/n
-        H[:,0,:,3]=(X.T@(X*(((1/(sig1*unexp))*(rho*r2))[:,None])))/n
-        H[:,1,:,2]=(X.T@(X*(((1/(sig2*unexp))*(rho*r1))[:,None])))/n
-        H[:,0,:,4]=(X.T@(X*(((1/(sig1*unexp))*(rho*r1\
-                                           -((1+(rho**2))*(r2/2))))[:,None])))/n
-        H[:,1,:,4]=(X.T@(X*(((1/(sig2*unexp))*(rho*r2\
-                                           -((1+(rho**2))*(r1/2))))[:,None])))/n
-        H[:,2,:,2]=-(X.T@(X*(((1/unexp)*(2*(r1**2)-rho*r1*r2))[:,None])))/n
-        H[:,3,:,3]=-(X.T@(X*(((1/unexp)*(2*(r2**2)-rho*r1*r2))[:,None])))/n
-        H[:,2,:,3]=-(X.T@(X*(((1/unexp)*(-rho*r1*r2))[:,None])))/n
-        H[:,2,:,4]=-(X.T@(X*(((0.5*r1*r2)-((rho/unexp)*(r1**2)))[:,None])))/n
-        H[:,3,:,4]=-(X.T@(X*(((0.5*r1*r2)-((rho/unexp)*(r2**2)))[:,None])))/n
-        H[:,4,:,4]=-(X[ybothnotnan,:].T@(X[ybothnotnan,:]*(((((((delta**2)+1)/(8*delta))*((r1**2)+(r2**2)))\
-                          -((((delta**2)-1)/(4*delta))*(r1*r2)))\
-                         -(unexp/4))[ybothnotnan,None])))/n
-        # use symmetry to fill gaps in hessian/n
-        for i in range(4):
-            for j in range(i+1,5):
-                H[:,j,:,i]=H[:,i,:,j]
-        return logL,grad,H,G
+        # initialise weights matrix for gradient
+        Wg=np.empty((nPLINK,5))
+        # calculate weights matrix for gradient
+        Wg[:,0]=((r1/sig1)-(rho*r2/sig1))/unexp
+        Wg[:,1]=((r2/sig2)-(rho*r1/sig2))/unexp
+        Wg[:,2]=(((r1**2)-(rho*r1*r2))/unexp)-1
+        Wg[:,3]=(((r2**2)-(rho*r1*r2))/unexp)-1
+        Wg[:,4]=(0.5*rho-0.5*((((delta**2)-1)/(4*delta))*(r1**2+r2**2)-(((delta**2+1)/(2*delta))*r1*r2)))
+        # set gradient=0 w.r.t. beta1 for missing y1 and idem w.r.t. beta2 for missing y2
+        Wg[~y1notnan,2]=0
+        Wg[~y2notnan,3]=0
+        # if just interested in G or H
+        if mode==4 or mode==5:
+            # calculate individual-specific contribution to gradient/n as 3d array
+            G=((X.T[:,None,:])*(Wg.T[None,:,:]))/n
+            # if just interest in G, return that
+            if mode==4:
+                return G
+        else:
+            # calculate gradient
+            grad=(X.T@Wg)/n
+            # if just interest in logL and grad, return those
+            if mode==2:
+                return logL,grad
+        # initialise weights array Hessian (nPLINK-by-5-by-5)
+        wH=np.empty((nPLINK,5,5))
+        # calculate weights array for Hessian
+        wH[:,0,0]=-1/(unexp*(sig1**2))
+        wH[:,1,1]=-1/(unexp*(sig2**2))
+        wH[:,0,1]=rho/(unexp*sig1*sig2)
+        wH[:,0,2]=(1/(sig1*unexp))*(rho*r2-2*r1)
+        wH[:,1,3]=(1/(sig2*unexp))*(rho*r1-2*r2)
+        wH[:,0,3]=(1/(sig1*unexp))*(rho*r2)
+        wH[:,1,2]=(1/(sig2*unexp))*(rho*r1)
+        wH[:,0,4]=(1/(sig1*unexp))*(rho*r1-((1+(rho**2))*(r2/2)))
+        wH[:,1,4]=(1/(sig2*unexp))*(rho*r2-((1+(rho**2))*(r1/2)))
+        wH[:,2,2]=-(1/unexp)*(2*(r1**2)-rho*r1*r2)
+        wH[:,3,3]=-(1/unexp)*(2*(r2**2)-rho*r1*r2)
+        wH[:,2,3]=-(1/unexp)*(-rho*r1*r2)
+        wH[:,2,4]=-((0.5*r1*r2)-((rho/unexp)*(r1**2)))
+        wH[:,3,4]=-((0.5*r1*r2)-((rho/unexp)*(r2**2)))
+        wH[:,4,4]=-((((((delta**2)+1)/(8*delta))*((r1**2)+(r2**2)))-((((delta**2)-1)/(4*delta))*(r1*r2)))-(unexp/4))
+        # set weight w.r.t. gamma twice to zero when either y1 and/or y2 is missing
+        wH[~ybothnotnan,4,4]=0
+        # initialise Hessian/n
+        H=np.empty((K,5,K,5))
+        # use symmetry to fill gaps in weights
+        for i in range(5):
+            for j in range(i,5):
+                # calculate Hessian/n
+                H[:,i,:,j]=(X.T@(X*wH[:,None,i,j]))/n
+                if j>i:
+                    # use symmetry to find out counterparts
+                    H[:,j,:,i]=H[:,i,:,j]
+        # if just interest in G and H, return that
+        if mode==5:
+            return G,H
+        else:
+            return logL,grad,H
 
 def Newton(param,y1,y2,y1notnan,y2notnan,ybothnotnan,n,nboth,N,g=None,gisnan=None,silent=False,linesearch=False):
     # if genotype vector provided, calculate some key ingredients
@@ -175,10 +209,11 @@ def Newton(param,y1,y2,y1notnan,y2notnan,ybothnotnan,n,nboth,N,g=None,gisnan=Non
     # while not converged and MAXITER not reached
     while not(converged) and i<MAXITER:
         # calculate log-likelihood, its gradient, and Hessian
-        (logL,grad,H,G)=CalcLogL(param,y1,y2,y1notnan,y2notnan,ybothnotnan,n,nboth,N,X,K)
+        (logL,grad,H)=CalcLogL(param,y1,y2,y1notnan,y2notnan,ybothnotnan,n,nboth,N,X,K)
         # if log-likelihood is -np.inf: quit; on a dead track for this SNP
         if np.isinf(logL):
             D=[0]
+            G=[0]
             return param,logL,grad,H,G,D,converged
         # unpack Hessian to matrix
         UH=H.reshape((K*5,K*5))
@@ -204,7 +239,7 @@ def Newton(param,y1,y2,y1notnan,y2notnan,ybothnotnan,n,nboth,N,g=None,gisnan=Non
         else:
             if linesearch:
                 # perform golden section to get new parameters estimates
-                (param,j,step)=GoldenSection(param,update.reshape((K,5)),y1,y2,y1notnan,y2notnan,ybothnotnan,n,nboth,N,X,K)
+                (param,j,step)=GoldenSection(param,logL,grad,update.reshape((K,5)),y1,y2,y1notnan,y2notnan,ybothnotnan,n,nboth,N,X,K)
             else:
                 # just apply Newton step directly
                 param+=update.reshape((K,5))
@@ -217,26 +252,39 @@ def Newton(param,y1,y2,y1notnan,y2notnan,ybothnotnan,n,nboth,N,g=None,gisnan=Non
                         +str(j)+' line-search steps, yielding step size = '+str(step))
                 else:
                     logger.info('Newton iteration '+str(i)+': logL='+str(logL))
+    # calculate individual-specific contributions to gradient/n
+    G=CalcLogL(param,y1,y2,y1notnan,y2notnan,ybothnotnan,n,nboth,N,X,K,mode=4)
     return param,logL,grad,H,G,D,converged
 
-def GoldenSection(param1,update,y1,y2,y1notnan,y2notnan,ybothnotnan,n,nboth,N,X,K):
+def GoldenSection(param,logL,grad,update,y1,y2,y1notnan,y2notnan,ybothnotnan,n,nboth,N,X,K):
+    # calculate update'grad
+    utg=(grad*update).sum()
     # initialise parameters at various points along interval
-    param2=param1+oneminthetainv*update
-    param3=param1+thetainv*update
-    param4=param1+update
+    param1=param
+    param2=param+oneminthetainv*update
+    param3=param+thetainv*update
+    param4=param+update
     # set corresponding step sizes
     step1=0
     step2=oneminthetainv
     step3=thetainv
     step4=1
-    # calculate log likelihood at mid-left and mid-right
-    logL2=CalcLogL(param2,y1,y2,y1notnan,y2notnan,ybothnotnan,n,nboth,N,X,K,logLonly=True)
-    logL3=CalcLogL(param3,y1,y2,y1notnan,y2notnan,ybothnotnan,n,nboth,N,X,K,logLonly=True)
-    # set iteration counter to zero and convergence to false
-    i=0
+    # set iteration counter to one and convergence to false
+    i=1
     converged=False
+    # calculate log likelihood at right, mid-left and mid-right
+    logL4=CalcLogL(param4,y1,y2,y1notnan,y2notnan,ybothnotnan,n,nboth,N,X,K,mode=1)
+    # directly try Armijo's rule perform actually performing section search
+    if logL4>=logL+ARMIJO*step4*utg:
+        return param4,i,step4
+    # calculate remaining log likelihoods
+    logL1=logL
+    logL2=CalcLogL(param2,y1,y2,y1notnan,y2notnan,ybothnotnan,n,nboth,N,X,K,mode=1)
+    logL3=CalcLogL(param3,y1,y2,y1notnan,y2notnan,ybothnotnan,n,nboth,N,X,K,mode=1)
     # while not converged and MAXITER not reached
     while not(converged) and i<MAXITER:
+        # update iteration counter
+        i+=1
         #if mid-left val >= mid-right val: set mid-right as right
         if logL2>=logL3: 
             # set parameters accordingly
@@ -248,8 +296,9 @@ def GoldenSection(param1,update,y1,y2,y1notnan,y2notnan,ybothnotnan,n,nboth,N,X,
             step3=step2
             step2=thetainv*step1+oneminthetainv*step4
             # calculate log likelihood at new mid-left and mid-right
+            logL4=logL3
             logL3=logL2
-            logL2=CalcLogL(param2,y1,y2,y1notnan,y2notnan,ybothnotnan,n,nboth,N,X,K,logLonly=True)
+            logL2=CalcLogL(param2,y1,y2,y1notnan,y2notnan,ybothnotnan,n,nboth,N,X,K,mode=1)
         #if mid-right val > mid-left val: set mid-left as left
         else:
             # set parameters accordingly
@@ -261,12 +310,13 @@ def GoldenSection(param1,update,y1,y2,y1notnan,y2notnan,ybothnotnan,n,nboth,N,X,
             step2=step3
             step3=thetainv*step4+oneminthetainv*step1
             # calculate log likelihood at new mid-left and mid-right
+            logL1=logL2
             logL2=logL3
-            logL3=CalcLogL(param3,y1,y2,y1notnan,y2notnan,ybothnotnan,n,nboth,N,X,K,logLonly=True)
-        if ((param2-param3)**2).mean()<TOL:
-            converged=True
-        i+=1
-    return param2,i,step2
+            logL3=CalcLogL(param3,y1,y2,y1notnan,y2notnan,ybothnotnan,n,nboth,N,X,K,mode=1)
+        # inexact convergence if Armijo's rule satisfied
+        if logL4>=logL+ARMIJO*step4*utg:
+            return param4,i,step4
+    return param4,i,step4
 
 def InitialiseParams(y1,y2,y1notnan,y2notnan,ybothnotnan,n1,n2):
     # get x for observations where y1 resp. y2 is not missing
