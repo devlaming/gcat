@@ -190,19 +190,7 @@ def CalcLogL(param,y1,y2,y1notnan,y2notnan,ybothnotnan,n,nboth,N,X,K,mode=3):
         else:
             return logL,grad,H
 
-def Newton(param,y1,y2,y1notnan,y2notnan,ybothnotnan,n,nboth,N,g=None,gisnan=None,silent=False,linesearch=False):
-    # if genotype vector provided, calculate some key ingredients
-    if g is not None:
-        # combine into grand X matrix
-        X=np.hstack((x,g[:,None]))
-        # ensure rows of X are zero for observations where genotype is missing
-        X[gisnan,:]=0
-        # set number of regressors to no. of control variables + 1 (for the SNP)
-        K=k+1
-    else:
-        # otherwise use version without SNP as grand X
-        X=x
-        K=k
+def Newton(param,y1,y2,y1notnan,y2notnan,ybothnotnan,n,nboth,N,X,K,silent=False,linesearch=True):
     # set iteration counter to zero and convergence to false
     i=0
     converged=False
@@ -454,7 +442,7 @@ def GCAT():
     param0=InitialiseParams(y1,y2,y1notnan,y2notnan,ybothnotnan,n1,n2)
     # estimate baseline model
     logger.info('Estimating baseline model')
-    (param0,logL0,_,_,_,_,converged0)=Newton(param0,y1,y2,y1notnan,y2notnan,ybothnotnan,n,nboth,N,linesearch=True)
+    (param0,logL0,_,_,_,_,converged0)=Newton(param0,y1,y2,y1notnan,y2notnan,ybothnotnan,n,nboth,N,x,k)
     # write baseline model estimates to output file
     pd.DataFrame(param0,columns=['ALPHA1','ALPHA2','BETA1','BETA2','GAMMA'],\
                  index=xlabels).to_csv(args.out+extBASE,sep=sep)                     
@@ -631,9 +619,19 @@ def AnalyseOneSNP(pbar,j,nbt,roundedn,ids,param0,logL0\
     nboths=ybothnotnans.sum()
     ns=y1ory2notnans.sum()
     Ns=n1s+n2s
-    # apply Newton's method, provided nboth>=MINN
+    # estimate, provided nboth>=MINN
     if nboths>=MINN:
-        (param1,logL1,grad1,H1,G1,D1,converged1)=Newton(param1,y1s,y2s,y1notnans,y2notnans,ybothnotnans,ns,nboths,Ns,g=g,gisnan=gisnan,silent=True)
+        # combine genotype and control variables into grand X matrix
+        X=np.hstack((x,g[:,None]))
+        # ensure rows of X are zero for observations where genotype is missing
+        X[gisnan,:]=0
+        # set number of regressors to no. of control variables + 1 (for the SNP)
+        K=k+1
+        # using BFGS or Newton's method, depending on input
+        if args.bfgs:
+            (param1,logL1,grad1,H1,G1,D1,converged1)=BFGS(param1,y1s,y2s,y1notnans,y2notnans,ybothnotnans,ns,nboths,Ns,X,K,silent=True)
+        else:
+            (param1,logL1,grad1,H1,G1,D1,converged1)=Newton(param1,y1s,y2s,y1notnans,y2notnans,ybothnotnans,ns,nboths,Ns,X,K,silent=True,linesearch=False)
     else: # else don't even try
         (param1,logL1,grad1,H1,G1,D1,converged1)=(None,None,None,None,None,[0],False)
     # calculate and store estimates, standard errors, etc.
@@ -1075,6 +1073,8 @@ def ParseInputArguments():
                     help = 'name of covariate file: should be comma-, space-, or tab-separated, with one row per individual, with FID and IID as first two fields, followed by a field per covariate; first row must contain labels (e.g. FID IID AGE AGESQ PC1 PC2 PC3 PC4 PC5); requires --pheno to be specified; WARNING: do not include an intercept in your covariate file, because GCAT always adds an intercept itself')
     parser.add_argument('--simul-only', action = 'store_true',
                     help = 'option to simulate data only (i.e. no analysis of simulated data); cannot be combined with --pheno')
+    parser.add_argument('--bfgs', action = 'store_true',
+                    help = 'option to estimate SNP-specific models using BFGS algorithm (useful if you have many control variables); cannot be combined with --simul-only')
     parser.add_argument('--snp', metavar = '', default = None, type = positive_int, nargs= '+',
                     help = '\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\bINTEGER INTEGER option to analyse only SNP with index j=s,...,t, where s=1st integer and t=2nd integer; cannot be combined with --simul-only')
     parser.add_argument('--out', metavar = 'PREFIX', default = None, type = str,
@@ -1229,6 +1229,8 @@ def CheckInputArgs():
             raise SyntaxError('--seed-effects must be specified when simulating phenotypes')
     if args.simul_only and args.snp is not None:
         raise SyntaxError('--simul-only cannot be combined with --snp')
+    if args.bfgs and args.simul_only:
+        raise SyntaxError('--simul-only cannot be combined with --bfgs')
     if args.snp is not None:
         if len(args.snp)!=2:
             raise SyntaxError('--snp needs to be followed by two integers')
