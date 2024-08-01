@@ -201,7 +201,7 @@ def Newton(param,y1,y2,y1notnan,y2notnan,ybothnotnan,n,nboth,N,X,K,silent=False,
     while not(converged) and i<MAXITER:
         # if SNP-specific model, and this is first Newton iteration
         if snpmodel and i==0:
-            # recycle as much as possible: reuse logL and calculate Hessian and gradient using weights baseline
+            # reuse logL and calculate gradient and Hessian using weights baseline model
             # (=unchanged comparded to baseline in 1st iter!)
             logL=logL0
             grad=(X.T@wG0)/n
@@ -261,14 +261,14 @@ def Newton(param,y1,y2,y1notnan,y2notnan,ybothnotnan,n,nboth,N,X,K,silent=False,
                         +str(j)+' line-search steps, yielding step size = '+str(step))
                 else:
                     logger.info('Newton iteration '+str(i)+': logL='+str(logL))
-    # calculat G for outer product gradient if required
+    # calculate G for outer product gradient if required
     if snpmodel:
         # calculate individual-specific contributions to gradient/n
         G=CalcLogL(param,y1,y2,y1notnan,y2notnan,ybothnotnan,n,nboth,N,X,K,mode=5)
         return param,logL,grad,H,G,D,converged
     return param,logL,grad,H,D,converged,wG,wH
 
-def GoldenSection(param,logL,grad,update,y1,y2,y1notnan,y2notnan,ybothnotnan,n,nboth,N,X,K):
+def GoldenSection(param,logL,grad,update,y1,y2,y1notnan,y2notnan,ybothnotnan,n,nboth,N,X,K,gradatend=False):
     # calculate update'grad
     utg=(grad*update).sum()
     # initialise parameters at various points along interval
@@ -281,18 +281,19 @@ def GoldenSection(param,logL,grad,update,y1,y2,y1notnan,y2notnan,ybothnotnan,n,n
     step2=oneminthetainv
     step3=thetainv
     step4=1
-    # set iteration counter to one and convergence to false
+    # set iteration counter to one and converged to false
     i=1
     converged=False
     # calculate log likelihood at right, mid-left and mid-right
     logL4=CalcLogL(param4,y1,y2,y1notnan,y2notnan,ybothnotnan,n,nboth,N,X,K,mode=1)
     # directly try Armijo's rule perform actually performing section search
     if logL4>=logL+ARMIJO*step4*utg:
-        return param4,i,step4
-    # calculate remaining log likelihoods
-    logL1=logL
-    logL2=CalcLogL(param2,y1,y2,y1notnan,y2notnan,ybothnotnan,n,nboth,N,X,K,mode=1)
-    logL3=CalcLogL(param3,y1,y2,y1notnan,y2notnan,ybothnotnan,n,nboth,N,X,K,mode=1)
+        converged=True
+    else: # if not directly meeting criterion
+        # calculate remaining log likelihoods
+        logL1=logL
+        logL2=CalcLogL(param2,y1,y2,y1notnan,y2notnan,ybothnotnan,n,nboth,N,X,K,mode=1)
+        logL3=CalcLogL(param3,y1,y2,y1notnan,y2notnan,ybothnotnan,n,nboth,N,X,K,mode=1)
     # while not converged and MAXITER not reached
     while not(converged) and i<MAXITER:
         # update iteration counter
@@ -327,8 +328,68 @@ def GoldenSection(param,logL,grad,update,y1,y2,y1notnan,y2notnan,ybothnotnan,n,n
             logL3=CalcLogL(param3,y1,y2,y1notnan,y2notnan,ybothnotnan,n,nboth,N,X,K,mode=1)
         # inexact convergence if Armijo's rule satisfied
         if logL4>=logL+ARMIJO*step4*utg:
-            return param4,i,step4
+            converged=True
+    if gradatend:
+        (logL4,grad4)=CalcLogL(param4,y1,y2,y1notnan,y2notnan,ybothnotnan,n,nboth,N,X,K,mode=2)
+        return param4,i,step4,logL4,grad4
     return param4,i,step4
+
+def BFGS(param,y1,y2,y1notnan,y2notnan,ybothnotnan,n,nboth,N,X,K):
+    silent=True
+    linesearch=True
+    snpmodel=True
+    # set iteration counter to zero and convergence to false
+    i=0
+    converged=False
+    # initialise approximated inverse Hessian as minus indentity matrix
+    AIH=-np.eye((K*5))
+    # while not converged and MAXITER not reached
+    while not(converged) and i<MAXITER:
+        # if first iteration
+        if i==0:
+            # reuse logL and calculate gradient using weights baseline model
+            # (=unchanged comparded to baseline in 1st iter!)
+            logL=logL0
+            grad=(X.T@wG0)/n
+        # if log-likelihood is -np.inf: quit; on a dead track for this SNP
+        if np.isinf(logL):
+            D=[0]
+            G=[0]
+            H=[0]
+            return param,logL,grad,H,G,D,converged
+        # if RMSE of gradient is less than 1E-6: converged
+        if (grad**2).mean()<TOL:
+            converged=True
+        else: # not yet converged, so ...
+            # update iteration counter
+            i+=1
+            # get BFGS update
+            update=(-AIH@grad.reshape((K*5,1)))
+            # perform golden section
+            (paramnew,j,stepsize,logLnew,gradnew)=GoldenSection(param,logL,grad,update.reshape((K,5)),y1,y2,y1notnan,y2notnan,ybothnotnan,n,nboth,N,X,K,gradatend=True)
+            # calculate quantities needed for BFGS
+            s=(paramnew-param).reshape((K*5,1))
+            y=(gradnew-grad).reshape((K*5,1))
+            sty=(s*y).sum()
+            r=1/sty
+            v=s*r
+            w=AIH@y
+            # store new parameters, gradient, logL, and update inverse Hessian (and stabilise latter)
+            param=paramnew
+            grad=gradnew
+            logL=logLnew
+            AIH=AIH-np.outer(v,w)-np.outer(w,v)+np.outer(v,v)*((w*y).sum())+np.outer(v,s)
+            AIH=(AIH+(AIH.T))/2
+    # when done: calculate G for outer product gradient and Hessian
+    (G,H)=CalcLogL(param,y1,y2,y1notnan,y2notnan,ybothnotnan,n,nboth,N,X,K,mode=6)
+    # unpack Hessian to matrix
+    UH=H.reshape((K*5,K*5))
+    # take average of UH and UH.T for numerical stability
+    UH=(UH+UH.T)/2
+    # get eigenvalue decomposition of minus unpackage Hessian
+    (D,P)=np.linalg.eigh(-UH)
+    # return results
+    return param,logL,grad,H,G,D,converged
 
 def InitialiseParams(y1,y2,y1notnan,y2notnan,ybothnotnan,n1,n2):
     # set parameters baseline model as global
@@ -492,7 +553,10 @@ def GCAT():
     elif observedbytes<expectedbytes:
         raise ValueError('Fewer bytes in '+args.bfile+extBED+' than expected. File corrupted?')
     # print update
-    logger.info('Estimating model for each SNP in '+args.bfile+extBED)
+    if args.bfgs:
+        logger.info('Estimating model for each SNP in '+args.bfile+extBED+' using BFGS algorithm')
+    else:
+        logger.info('Estimating model for each SNP in '+args.bfile+extBED+' using Newton algorithm')
     # compute rounded n (i.e. empty including empty bits)
     roundedn=nbt*nperbyte
     # get rowid of first two bits per byte being read
@@ -656,7 +720,7 @@ def AnalyseOneSNP(pbar,j,nbt,roundedn,ids\
         K=k+1
         # using BFGS or Newton's method, depending on input
         if args.bfgs:
-            (_)=BFGS()
+            (param1,logL1,grad1,H1,G1,D1,converged1)=BFGS(param1,y1s,y2s,y1notnans,y2notnans,ybothnotnans,ns,nboths,Ns,X,K)
         else:
             (param1,logL1,grad1,H1,G1,D1,converged1)=Newton(param1,y1s,y2s,y1notnans,y2notnans,ybothnotnans,ns,nboths,Ns,X,K,silent=True,linesearch=False,snpmodel=True)
     else: # else don't even try
