@@ -100,7 +100,7 @@ def CalcLogL(param,y1,y2,y1notnan,y2notnan,ybothnotnan,n,nboth,N,X,K,mode=3):
         2. nG is a global, which is set when reading out the PLINK files for analysis (i.e. it is the
         number of rows in the PLINK FAM file). This reveals the importance of doing some cleaning of
         the data prior to applying GCAT, e.g. using something like
-          plink --bfile myfile --keep phenotyped.txt --out smaller_file
+          plink --bfile myfile --keep phenotyped.txt --make-bed --out smaller_file
     '''
     # calculate log-likelihood constant
     cons=N*np.log(2*np.pi)
