@@ -26,6 +26,14 @@ thetainv=2/(1+5**0.5)
 oneminthetainv=1-thetainv
 RESULTSMBLOCK=2000
 
+# where different types of parameters are located parameters array
+ALPHA1COL=0
+ALPHA2COL=1
+BETA1COL=2
+BETA2COL=3
+GAMMACOL=4
+TOTALCOLS=5
+
 # define PLINK binary data variables
 extBED='.bed'
 extBIM='.bim'
@@ -63,22 +71,45 @@ HEADER += '------------------------------------------------------------'+eol
 def CalcLogL(param,y1,y2,y1notnan,y2notnan,ybothnotnan,n,nboth,N,X,K,mode=3):
     ''''
     Calulcation log-likelihood bivariate model
-     Mode: tells function what to calculate and return
-       1=logL
-       2=logL,gradient
-       3=logL,gradient,Hessian
-       4=logL,gradient,Hessian,individuals-specific weights gradient, and Hessian
-       5=G (iid-specific contribution to grad) only; at end of Newton algo
-       6=G and Hessian only; at end of BFGS algo
+    Inputs:
+        param:       K-by-TOTALCOLS array of effects
+        K:           number of regressors
+        y1:          nG-dimensional array with values for Y1 (can have np.nan values)
+        y2:          nG-dimensional array with values for Y2 (can have np.nan values)
+        y1notnan:    nG-dimensional Boolean, indicating for which obs. Y1 is not missing
+        y2notnan:    nG-dimensional Boolean, indicating for which obs. Y2 is not missing
+        ybothnotnan: nG-dimensional Boolean, indicating for which obs. both Y1 and Y2 not missing
+        n:           number of individuals for whom at least one of the two traits is not missing
+        nboth:       number of individuals for whom both traits are not missing
+        N:           number of observations in multivariate model
+                     (i.e. #individuals with nonmissing Y1 + #indinviduals with nonmissing Y2)
+        X:           nG-by-K matrix of regressors
+        K:           number of regressors
+        mode:        tells function what to calculate and return
+                        1=logL
+                        2=logL,gradient
+                        3=logL,gradient,Hessian
+                        4=logL,gradient,Hessian,individual-specific weights for gradient and Hessian
+                        5=G (individual-specific contribution to grad); useful at end of Newton algo
+                        6=G and Hessian only; useful at end of BFGS algo
+    Warnings:
+        1. for observations with any missingness on any regressor, the corresponding elements in
+        y1 and y2 should be set to np.nan, and the corresponding elements in y1notnan, y2notnan,
+        ybothnotnan should be set to False, and counts n, nboth, N should be updated correspondingly,
+        finally the corresponding rows in X should be set to all zeroes
+        2. nG is a global, which is set when reading out the PLINK files for analysis (i.e. it is the
+        number of rows in the PLINK FAM file). This reveals the importance of doing some cleaning of
+        the data prior to applying GCAT, e.g. using something like
+          plink --bfile myfile --keep phenotyped.txt --out smaller_file
     '''
     # calculate log-likelihood constant
     cons=N*np.log(2*np.pi)
     # calculate linear parts
     linpart=(X[:,:,None]*param[None,:,:]).sum(axis=1)
     # get sigma1, sigma2, delta, and rho
-    sig1=np.exp(linpart[:,2])
-    sig2=np.exp(linpart[:,3])
-    delta=np.exp(linpart[:,4])
+    sig1=np.exp(linpart[:,BETA1COL])
+    sig2=np.exp(linpart[:,BETA2COL])
+    delta=np.exp(linpart[:,GAMMACOL])
     rho=(delta-1)/(delta+1)
     # set halting variable to false
     halt=False
@@ -106,8 +137,8 @@ def CalcLogL(param,y1,y2,y1notnan,y2notnan,ybothnotnan,n,nboth,N,X,K,mode=3):
             return None
         return None,None
     # calculate errors 
-    e1=y1-linpart[:,0]
-    e2=y2-linpart[:,1]
+    e1=y1-linpart[:,ALPHA1COL]
+    e2=y2-linpart[:,ALPHA2COL]
     # at missing points, set rho and errors to zero, and set delta to one
     rho[~ybothnotnan]=0
     e1[~y1notnan]=0
@@ -124,8 +155,8 @@ def CalcLogL(param,y1,y2,y1notnan,y2notnan,ybothnotnan,n,nboth,N,X,K,mode=3):
     # calculate logL only if we really need it
     if mode==1 or mode==2 or mode==3 or mode==4:
         # calculate log|V| and quadratic term
-        logdetV=2*nboth*np.log(2)+linpart[ybothnotnan,4].sum()\
-            +2*(linpart[y1notnan,2].sum()+linpart[y2notnan,3].sum())\
+        logdetV=2*nboth*np.log(2)+linpart[ybothnotnan,GAMMACOL].sum()\
+            +2*(linpart[y1notnan,BETA1COL].sum()+linpart[y2notnan,BETA2COL].sum())\
             -2*((np.log(delta[ybothnotnan]+1)).sum())
         quadratic=(((r1**2)+(r2**2)-2*(rho*r1*r2))/unexp).sum()
         # calculate logL/n
@@ -134,13 +165,13 @@ def CalcLogL(param,y1,y2,y1notnan,y2notnan,ybothnotnan,n,nboth,N,X,K,mode=3):
         if mode==1:
             return logL
     # initialise weights matrix for gradient
-    wG=np.empty((nPLINK,5))
+    wG=np.empty((nPLINK,TOTALCOLS))
     # calculate weights matrix for gradient
-    wG[:,0]=((r1/sig1)-(rho*r2/sig1))/unexp
-    wG[:,1]=((r2/sig2)-(rho*r1/sig2))/unexp
-    wG[:,2]=(((r1**2)-(rho*r1*r2))/unexp)-1
-    wG[:,3]=(((r2**2)-(rho*r1*r2))/unexp)-1
-    wG[:,4]=(0.5*rho-0.5*((((delta**2)-1)/(4*delta))*(r1**2+r2**2)-(((delta**2+1)/(2*delta))*r1*r2)))
+    wG[:,ALPHA1COL]=((r1/sig1)-(rho*r2/sig1))/unexp
+    wG[:,ALPHA2COL]=((r2/sig2)-(rho*r1/sig2))/unexp
+    wG[:,BETA1COL]=(((r1**2)-(rho*r1*r2))/unexp)-1
+    wG[:,BETA2COL]=(((r2**2)-(rho*r1*r2))/unexp)-1
+    wG[:,GAMMACOL]=(0.5*rho-0.5*((((delta**2)-1)/(4*delta))*(r1**2+r2**2)-(((delta**2+1)/(2*delta))*r1*r2)))
     # set gradient=0 w.r.t. beta1 for missing y1 and idem w.r.t. beta2 for missing y2
     wG[~y1notnan,2]=0
     wG[~y2notnan,3]=0
@@ -157,30 +188,30 @@ def CalcLogL(param,y1,y2,y1notnan,y2notnan,ybothnotnan,n,nboth,N,X,K,mode=3):
         # if just interest in logL and grad, return those
         if mode==2:
             return logL,grad
-    # initialise weights array Hessian (nPLINK-by-5-by-5)
-    wH=np.empty((nPLINK,5,5))
+    # initialise weights array Hessian (nPLINK-by-TOTALCOLS-by-TOTALCOLS)
+    wH=np.empty((nPLINK,TOTALCOLS,TOTALCOLS))
     # calculate weights array for Hessian
-    wH[:,0,0]=-1/(unexp*(sig1**2))
-    wH[:,1,1]=-1/(unexp*(sig2**2))
-    wH[:,0,1]=rho/(unexp*sig1*sig2)
-    wH[:,0,2]=(1/(sig1*unexp))*(rho*r2-2*r1)
-    wH[:,1,3]=(1/(sig2*unexp))*(rho*r1-2*r2)
-    wH[:,0,3]=(1/(sig1*unexp))*(rho*r2)
-    wH[:,1,2]=(1/(sig2*unexp))*(rho*r1)
-    wH[:,0,4]=(1/(sig1*unexp))*(rho*r1-((1+(rho**2))*(r2/2)))
-    wH[:,1,4]=(1/(sig2*unexp))*(rho*r2-((1+(rho**2))*(r1/2)))
-    wH[:,2,2]=-(1/unexp)*(2*(r1**2)-rho*r1*r2)
-    wH[:,3,3]=-(1/unexp)*(2*(r2**2)-rho*r1*r2)
-    wH[:,2,3]=-(1/unexp)*(-rho*r1*r2)
-    wH[:,2,4]=-((0.5*r1*r2)-((rho/unexp)*(r1**2)))
-    wH[:,3,4]=-((0.5*r1*r2)-((rho/unexp)*(r2**2)))
-    wH[:,4,4]=-((((((delta**2)+1)/(8*delta))*((r1**2)+(r2**2)))-((((delta**2)-1)/(4*delta))*(r1*r2)))-(unexp/4))
+    wH[:,ALPHA1COL,ALPHA1COL]=-1/(unexp*(sig1**2))
+    wH[:,ALPHA2COL,ALPHA2COL]=-1/(unexp*(sig2**2))
+    wH[:,ALPHA1COL,ALPHA2COL]=rho/(unexp*sig1*sig2)
+    wH[:,ALPHA1COL,BETA1COL]=(1/(sig1*unexp))*(rho*r2-2*r1)
+    wH[:,ALPHA2COL,BETA2COL]=(1/(sig2*unexp))*(rho*r1-2*r2)
+    wH[:,ALPHA1COL,BETA2COL]=(1/(sig1*unexp))*(rho*r2)
+    wH[:,ALPHA2COL,BETA1COL]=(1/(sig2*unexp))*(rho*r1)
+    wH[:,ALPHA1COL,GAMMACOL]=(1/(sig1*unexp))*(rho*r1-((1+(rho**2))*(r2/2)))
+    wH[:,ALPHA2COL,GAMMACOL]=(1/(sig2*unexp))*(rho*r2-((1+(rho**2))*(r1/2)))
+    wH[:,BETA1COL,BETA1COL]=-(1/unexp)*(2*(r1**2)-rho*r1*r2)
+    wH[:,BETA2COL,BETA2COL]=-(1/unexp)*(2*(r2**2)-rho*r1*r2)
+    wH[:,BETA1COL,BETA2COL]=-(1/unexp)*(-rho*r1*r2)
+    wH[:,BETA1COL,GAMMACOL]=-((0.5*r1*r2)-((rho/unexp)*(r1**2)))
+    wH[:,BETA2COL,GAMMACOL]=-((0.5*r1*r2)-((rho/unexp)*(r2**2)))
+    wH[:,GAMMACOL,GAMMACOL]=-((((((delta**2)+1)/(8*delta))*((r1**2)+(r2**2)))-((((delta**2)-1)/(4*delta))*(r1*r2)))-(unexp/4))
     # set weight w.r.t. gamma twice to zero when either y1 and/or y2 is missing
-    wH[~ybothnotnan,4,4]=0
+    wH[~ybothnotnan,GAMMACOL,GAMMACOL]=0
     # initialise and calculate Hessian/n
-    H=np.empty((K,5,K,5))
-    for i in range(5):
-        for j in range(i,5):
+    H=np.empty((K,TOTALCOLS,K,TOTALCOLS))
+    for i in range(TOTALCOLS):
+        for j in range(i,TOTALCOLS):
             # calculate Hessian/n for component i vs. j and j vs. i
             H[:,i,:,j]=(X.T@(X*wH[:,None,i,j]))/n
             if j>i:
@@ -205,9 +236,9 @@ def Newton(param,y1,y2,y1notnan,y2notnan,ybothnotnan,n,nboth,N,X,K,silent=False,
             # (=unchanged comparded to baseline in 1st iter!)
             logL=logL0
             grad=(X.T@wG0)/n
-            H=np.empty((K,5,K,5))
-            for i in range(5):
-                for j in range(i,5):
+            H=np.empty((K,TOTALCOLS,K,TOTALCOLS))
+            for i in range(TOTALCOLS):
+                for j in range(i,TOTALCOLS):
                     # calculate Hessian/n for component i vs. j and j vs. i
                     H[:,i,:,j]=(X.T@(X*wH0[:,None,i,j]))/n
                     if j>i:
@@ -225,7 +256,7 @@ def Newton(param,y1,y2,y1notnan,y2notnan,ybothnotnan,n,nboth,N,X,K,silent=False,
             G=[0]
             return param,logL,grad,H,G,D,converged
         # unpack Hessian to matrix
-        UH=H.reshape((K*5,K*5))
+        UH=H.reshape((K*TOTALCOLS,K*TOTALCOLS))
         # take average of UH and UH.T for numerical stability
         UH=(UH+UH.T)/2
         # get eigenvalue decomposition of minus unpackage Hessian
@@ -238,9 +269,9 @@ def Newton(param,y1,y2,y1notnan,y2notnan,ybothnotnan,n,nboth,N,X,K,silent=False,
         else:
             Dadj=D
         # get Newton-Raphson update vector
-        update=P@((((grad.reshape((K*5,1))).T@P)/Dadj).T)
+        update=P@((((grad.reshape((K*TOTALCOLS,1))).T@P)/Dadj).T)
         # calculate convergence criterion
-        msg=(update*grad.reshape((K*5,1))).mean()
+        msg=(update*grad.reshape((K*TOTALCOLS,1))).mean()
         # if RMSE of gradient, taking curvature into account, is less than 1E-6: converged
         if msg<TOL:
             # set convergence to true and calculate sampling variance
@@ -248,10 +279,10 @@ def Newton(param,y1,y2,y1notnan,y2notnan,ybothnotnan,n,nboth,N,X,K,silent=False,
         else:
             if linesearch:
                 # perform golden section to get new parameters estimates
-                (param,j,step)=GoldenSection(param,logL,grad,update.reshape((K,5)),y1,y2,y1notnan,y2notnan,ybothnotnan,n,nboth,N,X,K)
+                (param,j,step)=GoldenSection(param,logL,grad,update.reshape((K,TOTALCOLS)),y1,y2,y1notnan,y2notnan,ybothnotnan,n,nboth,N,X,K)
             else:
                 # just apply Newton step directly
-                param+=update.reshape((K,5))
+                param+=update.reshape((K,TOTALCOLS))
             # update iteration counter
             i+=1
             # print update if not silent
@@ -342,7 +373,7 @@ def BFGS(param,y1,y2,y1notnan,y2notnan,ybothnotnan,n,nboth,N,X,K,section=False):
     i=0
     converged=False
     # initialise approximated inverse Hessian as minus indentity matrix
-    AIH=-np.eye((K*5))
+    AIH=-np.eye((K*TOTALCOLS))
     # while not converged and MAXITER not reached
     while not(converged) and i<MAXITER:
         # if first iteration
@@ -364,16 +395,16 @@ def BFGS(param,y1,y2,y1notnan,y2notnan,ybothnotnan,n,nboth,N,X,K,section=False):
             # update iteration counter
             i+=1
             # get BFGS update
-            update=(-AIH@grad.reshape((K*5,1)))
+            update=(-AIH@grad.reshape((K*TOTALCOLS,1)))
             # if golden section used
             if section:
-                (paramnew,j,stepsize,logLnew,gradnew)=GoldenSection(param,logL,grad,update.reshape((K,5)),y1,y2,y1notnan,y2notnan,ybothnotnan,n,nboth,N,X,K,gradatend=True)
+                (paramnew,j,stepsize,logLnew,gradnew)=GoldenSection(param,logL,grad,update.reshape((K,TOTALCOLS)),y1,y2,y1notnan,y2notnan,ybothnotnan,n,nboth,N,X,K,gradatend=True)
             else:
-                paramnew=param+(update.reshape((K,5)))
+                paramnew=param+(update.reshape((K,TOTALCOLS)))
                 (logLnew,gradnew)=CalcLogL(paramnew,y1,y2,y1notnan,y2notnan,ybothnotnan,n,nboth,N,X,K,mode=2)
             # calculate quantities needed for BFGS
-            s=(paramnew-param).reshape((K*5,1))
-            y=(gradnew-grad).reshape((K*5,1))
+            s=(paramnew-param).reshape((K*TOTALCOLS,1))
+            y=(gradnew-grad).reshape((K*TOTALCOLS,1))
             sty=(s*y).sum()
             r=1/sty
             v=s*r
@@ -387,7 +418,7 @@ def BFGS(param,y1,y2,y1notnan,y2notnan,ybothnotnan,n,nboth,N,X,K,section=False):
     # when done: calculate G for outer product gradient and Hessian
     (G,H)=CalcLogL(param,y1,y2,y1notnan,y2notnan,ybothnotnan,n,nboth,N,X,K,mode=6)
     # unpack Hessian to matrix
-    UH=H.reshape((K*5,K*5))
+    UH=H.reshape((K*TOTALCOLS,K*TOTALCOLS))
     # take average of UH and UH.T for numerical stability
     UH=(UH+UH.T)/2
     # get eigenvalue decomposition of minus unpackage Hessian
@@ -426,7 +457,12 @@ def InitialiseParams(y1,y2,y1notnan,y2notnan,ybothnotnan,n1,n2):
     gc=np.zeros(k)
     gc[0]=np.log((1+rhomean)/(1-rhomean))
     # collect and return initialised values
-    param0=np.vstack((a1,a2,b1,b2,gc)).T
+    param0=np.empty((k,TOTALCOLS))
+    param0[:,ALPHA1COL]=a1
+    param0[:,ALPHA2COL]=a2
+    param0[:,BETA1COL]=b1
+    param0[:,BETA2COL]=b2
+    param0[:,GAMMACOL]=gc
 
 def GCAT():
     # initialise (no. of) control variables and no. of people in PLINK file as globals
@@ -692,8 +728,11 @@ def AnalyseOneSNP(pbar,j,nbt,roundedn,ids\
             # calculate HWE test stat
             hwe=(((n0-en0)**2)/en0)+(((n1-en1)**2)/en1)+(((n2-en2)**2)/en2)
             hweP=1-stats.chi2.cdf(hwe,1)
-    # initialise SNP effects at zero
-    param1=np.vstack((param0.copy(),np.zeros((1,5))))
+    # initialise SNP-specific model effects at baseline for
+    # fixed regressors and zero for the SNP itself
+    param1=np.empty((k+1,TOTALCOLS))
+    param1[0:k,:]=param0.copy()
+    param1[-1,:]=0
     # make necessary copies of data for SNP-specific analysis
     y1s=y1.copy()
     y2s=y2.copy()
@@ -761,27 +800,27 @@ def CalculateStats(ngeno,eaf,hweP,param1,logL1,logL0,H1,G1,D1,converged1,j\
     nanfields=28*nanfield
     # if converged and Hessian pd, calculate stats and write to assoc file
     if converged1 and min(D1)>MINEVAL:
-        invH1=np.linalg.inv(H1.reshape((K*5,K*5)))
-        GGT1=(G1.reshape((K*5,G1.shape[2])))@((G1.reshape((K*5,G1.shape[2]))).T)
+        invH1=np.linalg.inv(H1.reshape((K*TOTALCOLS,K*TOTALCOLS)))
+        GGT1=(G1.reshape((K*TOTALCOLS,G1.shape[2])))@((G1.reshape((K*TOTALCOLS,G1.shape[2]))).T)
         param1Var=invH1@GGT1@invH1
-        param1SE=((np.diag(param1Var))**0.5).reshape((K,5))
+        param1SE=((np.diag(param1Var))**0.5).reshape((K,TOTALCOLS))
         # calculate average partial effect on expectations, stdevs and correlation
-        b1Var=(param1Var.reshape((K,5,K,5)))[:,2,:,2]
-        b2Var=(param1Var.reshape((K,5,K,5)))[:,3,:,3]
-        sig1=np.exp((X*param1[None,:,2]).sum(axis=1))
-        sig2=np.exp((X*param1[None,:,3]).sum(axis=1))
-        snpAPEsig1=param1[-1,2]*sig1[y1notnans].mean()
-        snpAPEsig2=param1[-1,3]*sig2[y2notnans].mean()
-        deltaAPEsig1=param1[-1,2]*(X*sig1[:,None])[y1notnans,:].mean(axis=0)
-        deltaAPEsig2=param1[-1,3]*(X*sig2[:,None])[y2notnans,:].mean(axis=0)
+        b1Var=(param1Var.reshape((K,TOTALCOLS,K,TOTALCOLS)))[:,BETA1COL,:,BETA1COL]
+        b2Var=(param1Var.reshape((K,TOTALCOLS,K,TOTALCOLS)))[:,BETA2COL,:,BETA2COL]
+        sig1=np.exp((X*param1[None,:,BETA1COL]).sum(axis=1))
+        sig2=np.exp((X*param1[None,:,BETA2COL]).sum(axis=1))
+        snpAPEsig1=param1[-1,BETA1COL]*sig1[y1notnans].mean()
+        snpAPEsig2=param1[-1,BETA2COL]*sig2[y2notnans].mean()
+        deltaAPEsig1=param1[-1,BETA1COL]*(X*sig1[:,None])[y1notnans,:].mean(axis=0)
+        deltaAPEsig2=param1[-1,BETA2COL]*(X*sig2[:,None])[y2notnans,:].mean(axis=0)
         deltaAPEsig1[-1]=sig1[y1notnans].mean()+deltaAPEsig1[-1]
         deltaAPEsig2[-1]=sig2[y2notnans].mean()+deltaAPEsig2[-1]
         snpAPEsig1SE=(deltaAPEsig1@b1Var@deltaAPEsig1)**0.5
         snpAPEsig2SE=(deltaAPEsig2@b2Var@deltaAPEsig2)**0.5
-        gcVar=(param1Var.reshape((K,5,K,5)))[:,4,:,4]
-        delta=np.exp((X*param1[None,:,4]).sum(axis=1))
-        snpAPErho=param1[-1,4]*(2*delta/((delta+1)**2))[ybothnotnans].mean()
-        deltaAPErho=2*param1[-1,4]\
+        gcVar=(param1Var.reshape((K,TOTALCOLS,K,TOTALCOLS)))[:,GAMMACOL,:,GAMMACOL]
+        delta=np.exp((X*param1[None,:,GAMMACOL]).sum(axis=1))
+        snpAPErho=param1[-1,GAMMACOL]*(2*delta/((delta+1)**2))[ybothnotnans].mean()
+        deltaAPErho=2*param1[-1,GAMMACOL]\
             *(X*(((1-delta)/((1+delta)**3))[:,None]))[ybothnotnans,:].mean(axis=0)
         deltaAPErho[-1]=(2*delta/((delta+1)**2))[ybothnotnans].mean()+deltaAPErho[-1]
         snpAPErhoSE=(deltaAPErho@gcVar@deltaAPErho)**0.5
@@ -791,21 +830,21 @@ def CalculateStats(ngeno,eaf,hweP,param1,logL1,logL0,H1,G1,D1,converged1,j\
         snpLRT=2*ns*(logL1-logL0)
         snpWald=(snp/snpSE)**2
         snpPWald=1-stats.chi2.cdf(snpWald,1)
-        snpPLRT=1-stats.chi2.cdf(snpLRT,5)
+        snpPLRT=1-stats.chi2.cdf(snpLRT,TOTALCOLS)
         # add LRT results to line
         outputline+=sep+str(snpLRT)+sep+str(snpPLRT)
         # add results for effect on E[Y1] to line
-        outputline+=sep+str(snp[0])+sep+str(snpSE[0])+sep+str(snpWald[0])+sep+str(snpPWald[0])
+        outputline+=sep+str(snp[ALPHA1COL])+sep+str(snpSE[ALPHA1COL])+sep+str(snpWald[ALPHA1COL])+sep+str(snpPWald[ALPHA1COL])
         # add results for effect on E[Y2] to line
-        outputline+=sep+str(snp[1])+sep+str(snpSE[1])+sep+str(snpWald[1])+sep+str(snpPWald[1])
+        outputline+=sep+str(snp[ALPHA2COL])+sep+str(snpSE[ALPHA2COL])+sep+str(snpWald[ALPHA2COL])+sep+str(snpPWald[ALPHA2COL])
         # add results for effect on Stdev(Y1) to line
-        outputline+=sep+str(snp[2])+sep+str(snpSE[2])+sep+str(snpWald[2])+sep+str(snpPWald[2])\
+        outputline+=sep+str(snp[BETA1COL])+sep+str(snpSE[BETA1COL])+sep+str(snpWald[BETA1COL])+sep+str(snpPWald[BETA1COL])\
                     +sep+str(snpAPEsig1)+sep+str(snpAPEsig1SE)
         # add results for effect on Stdev(Y2) to line
-        outputline+=sep+str(snp[3])+sep+str(snpSE[3])+sep+str(snpWald[3])+sep+str(snpPWald[3])\
+        outputline+=sep+str(snp[BETA2COL])+sep+str(snpSE[BETA2COL])+sep+str(snpWald[BETA2COL])+sep+str(snpPWald[BETA2COL])\
                     +sep+str(snpAPEsig2)+sep+str(snpAPEsig2SE)
         # add results for effect on Stdev(Y2) to line
-        outputline+=sep+str(snp[4])+sep+str(snpSE[4])+sep+str(snpWald[4])+sep+str(snpPWald[4])\
+        outputline+=sep+str(snp[GAMMACOL])+sep+str(snpSE[GAMMACOL])+sep+str(snpWald[GAMMACOL])+sep+str(snpPWald[GAMMACOL])\
                     +sep+str(snpAPErho)+sep+str(snpAPErhoSE)
     else:
         # if model not converged: set NaNs as SNP results
