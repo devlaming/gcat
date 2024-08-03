@@ -224,6 +224,20 @@ def CalcLogL(param,y1,y2,y1notnan,y2notnan,ybothnotnan,n,nboth,N,X,K,mode=3):
     else: # if just interested in G and H, return that
         return G,H
 
+def GetIntialGradHessSNPModel(X,K,n):
+    # reuse logL and calculate gradient and Hessian using weights baseline model
+    # (=unchanged comparded to baseline in 1st iter!)
+    grad=(X.T@wG0)/n
+    H=np.empty((K,TOTALCOLS,K,TOTALCOLS))
+    for i in range(TOTALCOLS):
+        for j in range(i,TOTALCOLS):
+            # calculate Hessian/n for component i vs. j and j vs. i
+            H[:,i,:,j]=(X.T@(X*wH0[:,None,i,j]))/n
+            if j>i:
+                # use symmetry to find out counterparts
+                H[:,j,:,i]=H[:,i,:,j]
+    return grad, H
+
 def Newton(param,y1,y2,y1notnan,y2notnan,ybothnotnan,n,nboth,N,X,K,silent=False,linesearch=True,snpmodel=False):
     # set iteration counter to zero and convergence to false
     i=0
@@ -232,18 +246,10 @@ def Newton(param,y1,y2,y1notnan,y2notnan,ybothnotnan,n,nboth,N,X,K,silent=False,
     while not(converged) and i<MAXITER:
         # if SNP-specific model, and this is first Newton iteration
         if snpmodel and i==0:
-            # reuse logL and calculate gradient and Hessian using weights baseline model
-            # (=unchanged comparded to baseline in 1st iter!)
+            # get log-likelihood, gradient, and Hessian for SNP-specific model
+            # when initialise using baseline estimates (i.e. SNP effects=0)
             logL=logL0
-            grad=(X.T@wG0)/n
-            H=np.empty((K,TOTALCOLS,K,TOTALCOLS))
-            for i in range(TOTALCOLS):
-                for j in range(i,TOTALCOLS):
-                    # calculate Hessian/n for component i vs. j and j vs. i
-                    H[:,i,:,j]=(X.T@(X*wH0[:,None,i,j]))/n
-                    if j>i:
-                        # use symmetry to find out counterparts
-                        H[:,j,:,i]=H[:,i,:,j]
+            (grad,H)=GetIntialGradHessSNPModel(X,K,n)
         elif snpmodel: # if SNP-specific model
             # calculate log-likelihood, gradient, and Hessian
             (logL,grad,H)=CalcLogL(param,y1,y2,y1notnan,y2notnan,ybothnotnan,n,nboth,N,X,K)
@@ -366,22 +372,32 @@ def GoldenSection(param,logL,grad,update,y1,y2,y1notnan,y2notnan,ybothnotnan,n,n
     return param4,i,step4
 
 def BFGS(param,y1,y2,y1notnan,y2notnan,ybothnotnan,n,nboth,N,X,K,section=False):
-    silent=True
-    linesearch=True
-    snpmodel=True
     # set iteration counter to zero and convergence to false
     i=0
     converged=False
-    # initialise approximated inverse Hessian as minus indentity matrix
-    AIH=-np.eye((K*TOTALCOLS))
     # while not converged and MAXITER not reached
     while not(converged) and i<MAXITER:
         # if first iteration
         if i==0:
-            # reuse logL and calculate gradient using weights baseline model
-            # (=unchanged comparded to baseline in 1st iter!)
+            # get log-likelihood, gradient, and Hessian for SNP-specific model
+            # when initialise using baseline estimates (i.e. SNP effects=0)
             logL=logL0
-            grad=(X.T@wG0)/n
+            (grad,H)=GetIntialGradHessSNPModel(X,K,n)
+            # unpack Hessian to matrix
+            UH=H.reshape((K*TOTALCOLS,K*TOTALCOLS))
+            # take average of UH and UH.T for numerical stability
+            UH=(UH+UH.T)/2
+            # get eigenvalue decomposition of minus unpackage Hessian
+            (D,P)=np.linalg.eigh(-UH)
+            # if lowest eigenvalue too low
+            if min(D)<MINEVAL:
+                # bend towards identity
+                a=(MINEVAL-D.min())/(1-D.min())
+                Dadj=(1-a)*D+a
+            else:
+                Dadj=D
+            # initialise approximated inverse Hessian as minus indentity matrix
+            AIH=-(P*(1/Dadj[None,:]))@P.T
         # if log-likelihood is -np.inf: quit; on a dead track for this SNP
         if np.isinf(logL):
             D=[0]
