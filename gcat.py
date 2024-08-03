@@ -92,6 +92,7 @@ def CalcLogL(param,y1,y2,y1notnan,y2notnan,ybothnotnan,n,nboth,N,X,K,mode=3):
                         4=logL,gradient,Hessian,individual-specific weights for gradient and Hessian
                         5=G (individual-specific contribution to grad); useful at end of Newton algo
                         6=G and Hessian only; useful at end of BFGS algo
+                        7=logL, G and Hessian only; useful at end of one-step efficient estimation
     Warnings:
         1. for observations with any missingness on any regressor, the corresponding elements in
         y1 and y2 should be set to np.nan, and the corresponding elements in y1notnan, y2notnan,
@@ -102,6 +103,8 @@ def CalcLogL(param,y1,y2,y1notnan,y2notnan,ybothnotnan,n,nboth,N,X,K,mode=3):
         the data prior to applying GCAT, e.g. using something like
           plink --bfile myfile --keep phenotyped.txt --make-bed --out smaller_file
     '''
+    # calculate length of y1,y2, and so on
+    nDATA=len(y1)
     # calculate log-likelihood constant
     cons=N*np.log(2*np.pi)
     # calculate linear parts
@@ -153,7 +156,7 @@ def CalcLogL(param,y1,y2,y1notnan,y2notnan,ybothnotnan,n,nboth,N,X,K,mode=3):
     # calculate 1-rsq
     unexp=1-(rho**2)
     # calculate logL only if we really need it
-    if mode==1 or mode==2 or mode==3 or mode==4:
+    if mode==1 or mode==2 or mode==3 or mode==4 or mode==7:
         # calculate log|V| and quadratic term
         logdetV=2*nboth*np.log(2)+linpart[ybothnotnan,GAMMACOL].sum()\
             +2*(linpart[y1notnan,BETA1COL].sum()+linpart[y2notnan,BETA2COL].sum())\
@@ -165,7 +168,7 @@ def CalcLogL(param,y1,y2,y1notnan,y2notnan,ybothnotnan,n,nboth,N,X,K,mode=3):
         if mode==1:
             return logL
     # initialise weights matrix for gradient
-    wG=np.empty((nPLINK,TOTALCOLS))
+    wG=np.empty((nDATA,TOTALCOLS))
     # calculate weights matrix for gradient
     wG[:,ALPHA1COL]=((r1/sig1)-(rho*r2/sig1))/unexp
     wG[:,ALPHA2COL]=((r2/sig2)-(rho*r1/sig2))/unexp
@@ -175,21 +178,21 @@ def CalcLogL(param,y1,y2,y1notnan,y2notnan,ybothnotnan,n,nboth,N,X,K,mode=3):
     # set gradient=0 w.r.t. beta1 for missing y1 and idem w.r.t. beta2 for missing y2
     wG[~y1notnan,2]=0
     wG[~y2notnan,3]=0
-    # if just interested in G or H
-    if mode==5 or mode==6:
+    # if interested in G instead of grad
+    if mode==5 or mode==6 or mode==7:
         # calculate individual-specific contribution to gradient/n as 3d array
         G=((X.T[:,None,:])*(wG.T[None,:,:]))/n
         # if just interest in G, return that
         if mode==5:
             return G
-    else:
+    else: # otherwise calculate grad
         # calculate gradient
         grad=(X.T@wG)/n
         # if just interest in logL and grad, return those
         if mode==2:
             return logL,grad
-    # initialise weights array Hessian (nPLINK-by-TOTALCOLS-by-TOTALCOLS)
-    wH=np.empty((nPLINK,TOTALCOLS,TOTALCOLS))
+    # initialise weights array Hessian (nDATA-by-TOTALCOLS-by-TOTALCOLS)
+    wH=np.empty((nDATA,TOTALCOLS,TOTALCOLS))
     # calculate weights array for Hessian
     wH[:,ALPHA1COL,ALPHA1COL]=-1/(unexp*(sig1**2))
     wH[:,ALPHA2COL,ALPHA2COL]=-1/(unexp*(sig2**2))
@@ -221,8 +224,10 @@ def CalcLogL(param,y1,y2,y1notnan,y2notnan,ybothnotnan,n,nboth,N,X,K,mode=3):
         return logL,grad,H
     elif mode==4: # if interested in logL, gradient, Hessian, and weights, return that
         return logL,grad,H,wG,wH
-    else: # if just interested in G and H, return that
+    elif mode==6: # if just interested in G and H, return that
         return G,H
+    else: # if just interested in logL, G, and H, return that
+        return logL,G,H
 
 def GetIntialGradHessSNPModel(X,K,n):
     # reuse logL and calculate gradient and Hessian using weights baseline model
@@ -238,19 +243,19 @@ def GetIntialGradHessSNPModel(X,K,n):
                 H[:,j,:,i]=H[:,i,:,j]
     return grad, H
 
-def Newton(param,y1,y2,y1notnan,y2notnan,ybothnotnan,n,nboth,N,X,K,silent=False,linesearch=True,snpmodel=False):
+def Newton(param,y1,y2,y1notnan,y2notnan,ybothnotnan,n,nboth,N,X,K,silent=False,linesearch=True,snpmodel=False,quickinitialisation=True):
     # set iteration counter to zero and convergence to false
     i=0
     converged=False
     # while not converged and MAXITER not reached
     while not(converged) and i<MAXITER:
         # if SNP-specific model, and this is first Newton iteration
-        if snpmodel and i==0:
+        if snpmodel and i==0 and quickinitialisation:
             # get log-likelihood, gradient, and Hessian for SNP-specific model
             # when initialise using baseline estimates (i.e. SNP effects=0)
             logL=logL0
             (grad,H)=GetIntialGradHessSNPModel(X,K,n)
-        elif snpmodel: # if SNP-specific model
+        elif snpmodel and (i>0 or not(quickinitialisation)): # if SNP-specific model
             # calculate log-likelihood, gradient, and Hessian
             (logL,grad,H)=CalcLogL(param,y1,y2,y1notnan,y2notnan,ybothnotnan,n,nboth,N,X,K)
         else: # if baseline model, do store individual-specific weights
@@ -302,7 +307,7 @@ def Newton(param,y1,y2,y1notnan,y2notnan,ybothnotnan,n,nboth,N,X,K,silent=False,
     if snpmodel:
         # calculate individual-specific contributions to gradient/n
         G=CalcLogL(param,y1,y2,y1notnan,y2notnan,ybothnotnan,n,nboth,N,X,K,mode=5)
-        return param,logL,grad,H,G,D,converged
+        return param,logL,grad,H,G,D,converged,i
     return param,logL,grad,H,D,converged,wG,wH
 
 def GoldenSection(param,logL,grad,update,y1,y2,y1notnan,y2notnan,ybothnotnan,n,nboth,N,X,K,gradatend=False):
@@ -371,14 +376,14 @@ def GoldenSection(param,logL,grad,update,y1,y2,y1notnan,y2notnan,ybothnotnan,n,n
         return param4,i,step4,logL4,grad4
     return param4,i,step4
 
-def BFGS(param,y1,y2,y1notnan,y2notnan,ybothnotnan,n,nboth,N,X,K,section=False):
+def BFGS(param,y1,y2,y1notnan,y2notnan,ybothnotnan,n,nboth,N,X,K,section=False,quickinitialisation=True):
     # set iteration counter to zero and convergence to false
     i=0
     converged=False
     # while not converged and MAXITER not reached
     while not(converged) and i<MAXITER:
         # if first iteration
-        if i==0:
+        if i==0 and quickinitialisation:
             # get log-likelihood, gradient, and Hessian for SNP-specific model
             # when initialise using baseline estimates (i.e. SNP effects=0)
             logL=logL0
@@ -396,8 +401,12 @@ def BFGS(param,y1,y2,y1notnan,y2notnan,ybothnotnan,n,nboth,N,X,K,section=False):
                 Dadj=(1-a)*D+a
             else:
                 Dadj=D
-            # initialise approximated inverse Hessian as minus indentity matrix
+            # initialise approximated inverse Hessian
             AIH=-(P*(1/Dadj[None,:]))@P.T
+        elif i==0 and not(quickinitialisation):
+            (logL,grad)=CalcLogL(param,y1,y2,y1notnan,y2notnan,ybothnotnan,n,nboth,N,X,K,mode=2)
+            # initialise approximated inverse Hessian
+            AIH=-np.eye(K*TOTALCOLS)
         # if log-likelihood is -np.inf: quit; on a dead track for this SNP
         if np.isinf(logL):
             D=[0]
@@ -440,7 +449,7 @@ def BFGS(param,y1,y2,y1notnan,y2notnan,ybothnotnan,n,nboth,N,X,K,section=False):
     # get eigenvalue decomposition of minus unpackage Hessian
     (D,P)=np.linalg.eigh(-UH)
     # return results
-    return param,logL,grad,H,G,D,converged
+    return param,logL,grad,H,G,D,converged,i
 
 def InitialiseParams(y1,y2,y1notnan,y2notnan,ybothnotnan,n1,n2):
     # set parameters baseline model as global
@@ -609,10 +618,14 @@ def GCAT():
     elif observedbytes<expectedbytes:
         raise ValueError('Fewer bytes in '+args.bfile+extBED+' than expected. File corrupted?')
     # print update
-    if args.bfgs:
+    if args.bfgs and not(onestep):
         logger.info('Estimating model for each SNP in '+args.bfile+extBED+' using BFGS algorithm')
-    else:
+    elif args.bfgs and onestep:
+        logger.info('Estimating model for each SNP in '+args.bfile+extBED+' using one-step efficient BFGS algorithm')
+    elif not(args.bfgs) and not(onestep):
         logger.info('Estimating model for each SNP in '+args.bfile+extBED+' using Newton algorithm')
+    else:
+        logger.info('Estimating model for each SNP in '+args.bfile+extBED+' using one-step efficient Newton algorithm')
     # compute rounded n (i.e. empty including empty bits)
     roundedn=nbt*nperbyte
     # get rowid of first two bits per byte being read
@@ -638,6 +651,7 @@ def GCAT():
                     +'N_'+y1label+'_COMPLETE'+sep\
                     +'N_'+y2label+'_COMPLETE'+sep\
                     +'NBOTHCOMPLETE'+sep\
+                    +'ITERATIONS'+sep\
                     +'LRT'+sep\
                     +'P_LRT'+sep\
                     +'ESTIMATE_ALPHA1'+sep\
@@ -672,8 +686,33 @@ def GCAT():
     # calculate how many SNPs in remainder block and how many output block in total
     Mr=Mt%RESULTSMBLOCK
     Bt=Bc+(Mr>0)
-    # set lambda function for analysis per SNP
-    analysej=lambda j:AnalyseOneSNP(pbar,j,nbt,roundedn,ids\
+    # if one-step efficient: get random subset of data, which is used to get consistent estimator
+    if onestep:
+        # initialise random-number generator
+        rng=np.random.default_rng(args.one[1])
+        # randomly sample the desired proportion
+        sampled=rng.uniform(size=nPLINK)<args.one[0]
+        # make necessary copies of data for analysis in subsample
+        xsub=x[sampled,:]
+        y1sub=y1[sampled]
+        y2sub=y2[sampled]
+        y1notnansub=y1notnan[sampled]
+        y2notnansub=y2notnan[sampled]
+        ybothnotnansub=ybothnotnan[sampled]
+        y1ory2notnansub=y1ory2notnan[sampled]
+        # calculate corresponding sample sizes
+        n1sub=y1notnansub.sum()
+        n2sub=y2notnansub.sum()
+        nbothsub=ybothnotnansub.sum()
+        nsub=y1ory2notnansub.sum()
+        Nsub=n1sub+n2sub
+        # set lambda function for analysis per SNP using one-step efficient estimation
+        analysej=lambda j:AnalyseOneSNPOneStep(pbar,j,nbt,roundedn,ids\
+                                    ,y1,y2,y1notnan,y2notnan,ybothnotnan,y1ory2notnan,n,nboth,N\
+                                    ,sampled,xsub,y1sub,y2sub,y1notnansub,y2notnansub,ybothnotnansub,y1ory2notnansub,nsub,nbothsub,Nsub)
+    else:
+        # set lambda function for analysis per SNP using Newton or BFGS
+        analysej=lambda j:AnalyseOneSNP(pbar,j,nbt,roundedn,ids\
                                     ,y1,y2,y1notnan,y2notnan,ybothnotnan,y1ory2notnan,n,nboth,N)
     # initialise progress bar
     pbar=tqdm(total=Mt)
@@ -692,6 +731,159 @@ def GCAT():
     pbar.close()
     # close connections to assoc file
     connassoc.close()
+
+def AnalyseOneSNPOneStep(pbar,j,nbt,roundedn,ids\
+                  ,y1,y2,y1notnan,y2notnan,ybothnotnan,y1ory2notnan,n,nboth,N\
+                  ,sampled,xsub,y1sub,y2sub,y1notnansub,y2notnansub,ybothnotnansub,y1ory2notnansub,nsub,nbothsub,Nsub):
+    # connect to bed file
+    connbed=open(args.bfile+extBED,'rb')
+    # go to starting point of jth SNP in BED file
+    offset=3+(nbt*(j-1))
+    connbed.seek(offset,0)
+    # read bytes
+    gbytes=np.frombuffer(connbed.read(nbt),dtype=np.uint8)
+    # close connection to bed file
+    connbed.close()
+    # initialise genotypes for this read as empty
+    g=np.empty(roundedn,dtype=np.uint8)
+    # per individual in each byte
+    for i in range(nperbyte):
+        # take difference between what is left of byte after removing 2 bits
+        gbytesleft=gbytes>>2
+        g[ids[0:nbt]+i]=gbytes-(gbytesleft<<2)
+        # keep part of byte that is left
+        gbytes=gbytesleft
+    # drop rows corresponding to empty bits of last byte for each SNP
+    g=g[0:nPLINK]
+    # find rows with missing genotype
+    gisnan=(g==1)
+    # set missing values to zero
+    g[gisnan]=0
+    # recode genotype, where 0=homozygote A1, 1=heterozygote, 2=homozygote A2
+    g[g==2]=1
+    g[g==3]=2
+    # get genotype vector for subsampled data
+    gsub=g[sampled]
+    gisnansub=gisnan[sampled]
+    # count number of nonmissing genotypes
+    ngeno=(~gisnan).sum()
+    # initialise empirical allele frequency and HWE pval as NaN
+    eaf=np.nan
+    hweP=np.nan
+    # if at least 1 nonmissing genotype
+    if ngeno>0:
+        # calculate empirical frequency
+        eaf=((g[~gisnan]).mean())/2
+        # if empirical frequency is not precisely zero or one
+        if (eaf*(1-eaf))!=0:
+            # calculate counts of homozygotes and heterozygotes
+            n0=(g[~gisnan]==0).sum()
+            n1=(g[~gisnan]==1).sum()
+            n2=(g[~gisnan]==2).sum()
+            # calculate expected counts
+            en0=((1-eaf)**2)*ngeno
+            en1=(2*eaf*(1-eaf))*ngeno
+            en2=(eaf**2)*ngeno
+            # calculate HWE test stat
+            hwe=(((n0-en0)**2)/en0)+(((n1-en1)**2)/en1)+(((n2-en2)**2)/en2)
+            hweP=1-stats.chi2.cdf(hwe,1)
+    # initialise SNP-specific model effects at baseline for
+    # fixed regressors and zero for the SNP itself
+    param1=np.empty((k+1,TOTALCOLS))
+    param1[0:k,:]=param0.copy()
+    param1[-1,:]=0
+    # make necessary copies of data for SNP-specific analysis
+    y1s=y1.copy()
+    y2s=y2.copy()
+    y1notnans=y1notnan.copy()
+    y2notnans=y2notnan.copy()
+    ybothnotnans=ybothnotnan.copy()
+    y1ory2notnans=y1ory2notnan.copy()
+    y1subs=y1sub.copy()
+    y2subs=y2sub.copy()
+    y1notnansubs=y1notnansub.copy()
+    y2notnansubs=y2notnansub.copy()
+    ybothnotnansubs=ybothnotnansub.copy()
+    y1ory2notnansubs=y1ory2notnansub.copy()
+    # set y1 and y2 to missing for individuals with missing genotype
+    y1s[gisnan]=np.nan
+    y2s[gisnan]=np.nan
+    y1notnans[gisnan]=False
+    y2notnans[gisnan]=False
+    ybothnotnans[gisnan]=False
+    y1ory2notnans[gisnan]=False
+    y1subs[gisnansub]=np.nan
+    y2subs[gisnansub]=np.nan
+    y1notnansubs[gisnansub]=False
+    y2notnansubs[gisnansub]=False
+    ybothnotnansubs[gisnansub]=False
+    y1ory2notnansubs[gisnansub]=False
+    # calculate corresponding SNP-specific sample sizes
+    n1s=y1notnans.sum()
+    n2s=y2notnans.sum()
+    nboths=ybothnotnans.sum()
+    ns=y1ory2notnans.sum()
+    Ns=n1s+n2s
+    n1subs=y1notnansubs.sum()
+    n2subs=y2notnansubs.sum()
+    nbothsubs=ybothnotnansubs.sum()
+    nsubs=y1ory2notnansubs.sum()
+    Nsubs=n1subs+n2subs
+    # estimate, provided nboth in the subsample>=MINN
+    if nbothsubs>=MINN:
+        # combine genotype and control variables into grand X matrix
+        X=np.hstack((x,g[:,None]))
+        Xsub=np.hstack((xsub,gsub[:,None]))
+        # ensure rows of X are zero for observations where genotype is missing
+        X[gisnan,:]=0
+        Xsub[gisnansub,:]=0
+        # set number of regressors to no. of control variables + 1 (for the SNP)
+        K=k+1
+        # using BFGS or Newton's method, depending on input
+        if args.bfgs:
+            (param1,_,_,_,_,_,converged1,i)=BFGS(param1,y1subs,y2subs,y1notnansubs,y2notnansubs,ybothnotnansubs,nsubs,nbothsubs,Nsubs,Xsub,K,quickinitialisation=False)
+        else:
+            (param1,_,_,_,_,_,converged1,i)=Newton(param1,y1subs,y2subs,y1notnansubs,y2notnansubs,ybothnotnansubs,nsubs,nbothsubs,Nsubs,Xsub,K,silent=True,linesearch=False,snpmodel=True,quickinitialisation=False)
+        # if model for subsample has converged, perform one more Newton step on full sample, to get efficient estimates
+        if converged1:
+            # calculate log-likelihood, gradient, Hessian for the full sample, evaluated at estimates from subsample
+            (logL1,grad1,H1)=CalcLogL(param1,y1s,y2s,y1notnans,y2notnans,ybothnotnans,ns,nboths,Ns,X,K)
+            # unpack Hessian to matrix
+            UH=H1.reshape((K*TOTALCOLS,K*TOTALCOLS))
+            # take average of UH and UH.T for numerical stability
+            UH=(UH+UH.T)/2
+            # get eigenvalue decomposition of minus unpackage Hessian
+            (D,P)=np.linalg.eigh(-UH)
+            # if lowest eigenvalue too low
+            if min(D)<MINEVAL:
+                # bend s.t. Newton becomes more like gradient descent
+                a=(MINEVAL-D.min())/(1-D.min())
+                Dadj=(1-a)*D+a
+            else:
+                Dadj=D
+            # get Newton-Raphson update vector
+            update1=P@((((grad1.reshape((K*TOTALCOLS,1))).T@P)/Dadj).T)
+            # apply update
+            param1+=update1.reshape((K,TOTALCOLS))
+            # calculate log-likelihood, gradient, Hessian, and gradient per observation for efficient estimates
+            (logL1,G1,H1)=CalcLogL(param1,y1s,y2s,y1notnans,y2notnans,ybothnotnans,ns,nboths,Ns,X,K,mode=7)
+            # unpack Hessian to matrix
+            UH=H1.reshape((K*TOTALCOLS,K*TOTALCOLS))
+            # take average of UH and UH.T for numerical stability
+            UH=(UH+UH.T)/2
+            # get eigenvalue decomposition of minus unpackage Hessian
+            (D1,P)=np.linalg.eigh(-UH)
+        else:
+            (param1,logL1,H1,G1,D1,converged1)=(None,None,None,None,[0],False)
+    else: # else don't even try
+        (param1,logL1,H1,G1,D1,converged1)=(None,None,None,None,[0],False)
+    # calculate and store estimates, standard errors, etc.
+    outputline=CalculateStats(ngeno,eaf,hweP,param1,logL1,H1,G1,D1,converged1,j,i\
+                              ,y1notnans,y2notnans,ybothnotnans,n1s,n2s,ns,nboths,Ns,g,gisnan)
+    # update progress bar
+    pbar.update(1)
+    # return output line with results
+    return outputline
 
 def AnalyseOneSNP(pbar,j,nbt,roundedn,ids\
                   ,y1,y2,y1notnan,y2notnan,ybothnotnan,y1ory2notnan,n,nboth,N):
@@ -779,20 +971,20 @@ def AnalyseOneSNP(pbar,j,nbt,roundedn,ids\
         K=k+1
         # using BFGS or Newton's method, depending on input
         if args.bfgs:
-            (param1,logL1,grad1,H1,G1,D1,converged1)=BFGS(param1,y1s,y2s,y1notnans,y2notnans,ybothnotnans,ns,nboths,Ns,X,K)
+            (param1,logL1,grad1,H1,G1,D1,converged1,i)=BFGS(param1,y1s,y2s,y1notnans,y2notnans,ybothnotnans,ns,nboths,Ns,X,K)
         else:
-            (param1,logL1,grad1,H1,G1,D1,converged1)=Newton(param1,y1s,y2s,y1notnans,y2notnans,ybothnotnans,ns,nboths,Ns,X,K,silent=True,linesearch=False,snpmodel=True)
+            (param1,logL1,grad1,H1,G1,D1,converged1,i)=Newton(param1,y1s,y2s,y1notnans,y2notnans,ybothnotnans,ns,nboths,Ns,X,K,silent=True,linesearch=False,snpmodel=True)
     else: # else don't even try
-        (param1,logL1,grad1,H1,G1,D1,converged1)=(None,None,None,None,None,[0],False)
+        (param1,logL1,H1,G1,D1,converged1)=(None,None,None,None,[0],False)
     # calculate and store estimates, standard errors, etc.
-    outputline=CalculateStats(ngeno,eaf,hweP,param1,logL1,logL0,H1,G1,D1,converged1,j\
+    outputline=CalculateStats(ngeno,eaf,hweP,param1,logL1,H1,G1,D1,converged1,j,i\
                               ,y1notnans,y2notnans,ybothnotnans,n1s,n2s,ns,nboths,Ns,g,gisnan)
     # update progress bar
     pbar.update(1)
     # return output line with results
     return outputline
 
-def CalculateStats(ngeno,eaf,hweP,param1,logL1,logL0,H1,G1,D1,converged1,j\
+def CalculateStats(ngeno,eaf,hweP,param1,logL1,H1,G1,D1,converged1,j,i\
                    ,y1notnans,y2notnans,ybothnotnans,n1s,n2s,ns,nboths,Ns,g,gisnan):
     # combine SNP and control variables into grand X matrix
     X=np.hstack((x,g[:,None]))
@@ -810,7 +1002,7 @@ def CalculateStats(ngeno,eaf,hweP,param1,logL1,logL0,H1,G1,D1,converged1,j\
     # build up line to write
     outputline=snpchr+sep+snpid+sep+snpbaseallele+sep+str(1-eaf)+sep\
                +snpeffallele+sep+str(eaf)+sep+str(hweP)+sep+str(ngeno)+sep\
-               +str(n1s)+sep+str(n2s)+sep+str(nboths)
+               +str(n1s)+sep+str(n2s)+sep+str(nboths)+sep+str(i)
     # define sequence of NaNs for missing stuff, if any
     nanfield=sep+'nan'
     nanfields=28*nanfield
@@ -1224,7 +1416,9 @@ def ParseInputArguments():
     parser.add_argument('--simul-only', action = 'store_true',
                     help = 'option to simulate data only (i.e. no analysis of simulated data); cannot be combined with --pheno')
     parser.add_argument('--bfgs', action = 'store_true',
-                    help = 'option to estimate SNP-specific models using BFGS algorithm (useful if you have many control variables); cannot be combined with --simul-only')
+                    help = 'option to estimate SNP-specific models using BFGS algorithm; cannot be combined with --simul-only')
+    parser.add_argument('--one', metavar = '', default = None, nargs= '+',
+                    help = '\b\b\b\b\b\b\b\b\b\b\b\b\b\b\bNUMBER INTEGER option to perform 1-step efficient estimation, by randomly sampling a fraction (1st input argument; between 0 and 1) of the observations, to obtain estimates that serve as starting point for a single Newton step based on full data; 2nd input argument is the seed for the random-number generator for the random sampling; cannot be combined with --simul-only')
     parser.add_argument('--snp', metavar = '', default = None, type = positive_int, nargs= '+',
                     help = '\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\bINTEGER INTEGER option to analyse only SNP with index j=s,...,t, where s=1st integer and t=2nd integer; cannot be combined with --simul-only')
     parser.add_argument('--out', metavar = 'PREFIX', default = None, type = str,
@@ -1283,7 +1477,7 @@ def ShowWelcome():
         raise SyntaxError('you specified incorrect input options')
 
 def CheckInputArgs():
-    global simulg, simuly, covars
+    global simulg, simuly, covars, onestep
     # set covars to False by default, change if needed based on input
     covars=False
     if args.bfile is not None and (args.n is not None or args.m is not None):
@@ -1386,6 +1580,16 @@ def CheckInputArgs():
             raise SyntaxError('--snp needs to be followed by two integers')
         elif args.snp[1]<args.snp[0]:
             raise SyntaxError('--snp requires 1st integer <= 2nd integer')
+    if args.one is not None:
+        if args.simul_only:
+            raise SyntaxError('--one cannot be combined with --simul-only')
+        if len(args.one)!=2:
+            raise SyntaxError('--one needs to be followed by a number between zero and one (fraction of individuals that will be randomly sample) and a positive integer (to set the random-number generator for random sampling')
+        args.one[0]=number_between_0_1(args.one[0])
+        args.one[1]=positive_int(args.one[1])
+        onestep=True
+    else:
+        onestep=False
 
 def FindBlockSize():
     global dimg
