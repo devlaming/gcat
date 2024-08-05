@@ -376,7 +376,7 @@ def GoldenSection(param,logL,grad,update,y1,y2,y1notnan,y2notnan,ybothnotnan,n,n
         return param4,i,step4,logL4,grad4
     return param4,i,step4
 
-def BFGS(param,y1,y2,y1notnan,y2notnan,ybothnotnan,n,nboth,N,X,K,section=False,quickinitialisation=True):
+def BFGS(param,y1,y2,y1notnan,y2notnan,ybothnotnan,n,nboth,N,X,K,section=False,quickinitialisation=True,justLogL=False):
     # set iteration counter to zero and convergence to false
     i=0
     converged=False
@@ -440,16 +440,20 @@ def BFGS(param,y1,y2,y1notnan,y2notnan,ybothnotnan,n,nboth,N,X,K,section=False,q
             logL=logLnew
             AIH=AIH-np.outer(v,w)-np.outer(w,v)+np.outer(v,v)*((w*y).sum())+np.outer(v,s)
             AIH=(AIH+(AIH.T))/2
-    # when done: calculate G for outer product gradient and Hessian
-    (G,H)=CalcLogL(param,y1,y2,y1notnan,y2notnan,ybothnotnan,n,nboth,N,X,K,mode=6)
-    # unpack Hessian to matrix
-    UH=H.reshape((K*TOTALCOLS,K*TOTALCOLS))
-    # take average of UH and UH.T for numerical stability
-    UH=(UH+UH.T)/2
-    # get eigenvalue decomposition of minus unpackage Hessian
-    (D,P)=np.linalg.eigh(-UH)
-    # return results
-    return param,logL,grad,H,G,D,converged,i
+    # if just interest in log-likelihood at optimum (needed for LRT)
+    if justLogL:
+        return logL,converged
+    else: # else calculate the other outputs as well
+        # when done: calculate G for outer product gradient and Hessian
+        (G,H)=CalcLogL(param,y1,y2,y1notnan,y2notnan,ybothnotnan,n,nboth,N,X,K,mode=6)
+        # unpack Hessian to matrix
+        UH=H.reshape((K*TOTALCOLS,K*TOTALCOLS))
+        # take average of UH and UH.T for numerical stability
+        UH=(UH+UH.T)/2
+        # get eigenvalue decomposition of minus unpackage Hessian
+        (D,P)=np.linalg.eigh(-UH)
+        # return results
+        return param,logL,grad,H,G,D,converged,i
 
 def InitialiseParams(y1,y2,y1notnan,y2notnan,ybothnotnan,n1,n2):
     # set parameters baseline model as global
@@ -652,8 +656,6 @@ def GCAT():
                     +'N_'+y2label+'_COMPLETE'+sep\
                     +'NBOTHCOMPLETE'+sep\
                     +'ITERATIONS'+sep\
-                    +'LRT'+sep\
-                    +'P_LRT'+sep\
                     +'ESTIMATE_ALPHA1'+sep\
                     +'SE_ALPHA1'+sep\
                     +'WALD_ALPHA1'+sep\
@@ -679,7 +681,13 @@ def GCAT():
                     +'WALD_GAMMA'+sep\
                     +'P_GAMMA'+sep\
                     +'APE_CORR_'+y1label+'_'+y2label+sep\
-                    +'SE_APE_CORR_'+y1label+'_'+y2label+eol)
+                    +'SE_APE_CORR_'+y1label+'_'+y2label+sep\
+                    +'WALD_JOINT'+sep\
+                    +'P_WALD_JOINT')
+    # if doing LRT per SNP, print two additional fields
+    if args.lrt: connassoc.write(sep+'LRT_JOINT'+sep+'P_LRT_JOINT')
+    # write EOL character to association results file
+    connassoc.write(eol)
     # calculate how many SNPs to analyse total and how many complete output blocks
     Mt=Mend+1-Mstart
     Bc=int(Mt/RESULTSMBLOCK)
@@ -873,12 +881,32 @@ def AnalyseOneSNPOneStep(pbar,j,nbt,roundedn,ids\
             UH=(UH+UH.T)/2
             # get eigenvalue decomposition of minus unpackage Hessian
             (D1,P)=np.linalg.eigh(-UH)
+            # if LRT required
+            if args.lrt:
+                # if any difference in observations considered in baseline model vs. SNP-specific model (due to SNP missingness)
+                if ((y1notnans!=y1notnan).sum()+(y2notnans!=y2notnan).sum())>0:
+                    # copy baseline regressors, and set observations with missing SNP data to zero
+                    xs=x.copy()
+                    xs[gisnan,:]=0
+                    # use Newton or BFGS to get baseline estimates for the subset of observations in SNP-specific model               
+                    if args.bfgs:
+                        (logL0s,converged0s)=BFGS(param0,y1s,y2s,y1notnans,y2notnans,ybothnotnans,ns,nboths,Ns,xs,k,quickinitialisation=False,justLogL=True)
+                    else:
+                        (_,logL0s,_,_,_,converged0s,_,_)=Newton(param0,y1s,y2s,y1notnans,y2notnans,ybothnotnans,ns,nboths,Ns,xs,k,silent=True,linesearch=False,quickinitialisation=False)
+                    # only keep logL0s if converged, otherwise set to NaN
+                    if not(converged0s):
+                        logL0s=np.nan
+                else: # if no differences, set logL0s as logL0
+                    logL0s=logL0
+            else:
+                # set logL0s to NaN
+                logL0s=np.nan
         else:
-            (param1,logL1,H1,G1,D1,converged1)=(None,None,None,None,[0],False)
+            (param1,logL1,H1,G1,D1,converged1,logL0s)=(None,None,None,None,[0],False,None)
     else: # else don't even try
-        (param1,logL1,H1,G1,D1,converged1)=(None,None,None,None,[0],False)
+        (param1,logL1,H1,G1,D1,converged1,logL0s)=(None,None,None,None,[0],False,None)
     # calculate and store estimates, standard errors, etc.
-    outputline=CalculateStats(ngeno,eaf,hweP,param1,logL1,H1,G1,D1,converged1,j,i\
+    outputline=CalculateStats(ngeno,eaf,hweP,param1,logL1,logL0s,H1,G1,D1,converged1,j,i\
                               ,y1notnans,y2notnans,ybothnotnans,n1s,n2s,ns,nboths,Ns,g,gisnan)
     # update progress bar
     pbar.update(1)
@@ -974,17 +1002,37 @@ def AnalyseOneSNP(pbar,j,nbt,roundedn,ids\
             (param1,logL1,grad1,H1,G1,D1,converged1,i)=BFGS(param1,y1s,y2s,y1notnans,y2notnans,ybothnotnans,ns,nboths,Ns,X,K)
         else:
             (param1,logL1,grad1,H1,G1,D1,converged1,i)=Newton(param1,y1s,y2s,y1notnans,y2notnans,ybothnotnans,ns,nboths,Ns,X,K,silent=True,linesearch=False,snpmodel=True)
+        # if LRT required
+        if args.lrt:
+            # if any difference in observations considered in baseline model vs. SNP-specific model (due to SNP missingness)
+            if ((y1notnans!=y1notnan).sum()+(y2notnans!=y2notnan).sum())>0:
+                # copy baseline regressors, and set observations with missing SNP data to zero
+                xs=x.copy()
+                xs[gisnan,:]=0
+                # use Newton or BFGS to get baseline estimates for the subset of observations in SNP-specific model               
+                if args.bfgs:
+                    (logL0s,converged0s)=BFGS(param0,y1s,y2s,y1notnans,y2notnans,ybothnotnans,ns,nboths,Ns,xs,k,quickinitialisation=False,justLogL=True)
+                else:
+                    (_,logL0s,_,_,_,converged0s,_,_)=Newton(param0,y1s,y2s,y1notnans,y2notnans,ybothnotnans,ns,nboths,Ns,xs,k,silent=True,linesearch=False,quickinitialisation=False)
+                # only keep logL0s if converged, otherwise set to NaN
+                if not(converged0s):
+                    logL0s=np.nan
+            else: # if no differences, set logL0s as logL0
+                logL0s=logL0
+        else:
+            # set logL0s to NaN
+            logL0s=np.nan
     else: # else don't even try
-        (param1,logL1,H1,G1,D1,converged1)=(None,None,None,None,[0],False)
+        (param1,logL1,H1,G1,D1,converged1,logL0s)=(None,None,None,None,[0],False,None)
     # calculate and store estimates, standard errors, etc.
-    outputline=CalculateStats(ngeno,eaf,hweP,param1,logL1,H1,G1,D1,converged1,j,i\
+    outputline=CalculateStats(ngeno,eaf,hweP,param1,logL1,logL0s,H1,G1,D1,converged1,j,i\
                               ,y1notnans,y2notnans,ybothnotnans,n1s,n2s,ns,nboths,Ns,g,gisnan)
     # update progress bar
     pbar.update(1)
     # return output line with results
     return outputline
 
-def CalculateStats(ngeno,eaf,hweP,param1,logL1,H1,G1,D1,converged1,j,i\
+def CalculateStats(ngeno,eaf,hweP,param1,logL1,logL0s,H1,G1,D1,converged1,j,i\
                    ,y1notnans,y2notnans,ybothnotnans,n1s,n2s,ns,nboths,Ns,g,gisnan):
     # combine SNP and control variables into grand X matrix
     X=np.hstack((x,g[:,None]))
@@ -1005,42 +1053,58 @@ def CalculateStats(ngeno,eaf,hweP,param1,logL1,H1,G1,D1,converged1,j,i\
                +str(n1s)+sep+str(n2s)+sep+str(nboths)+sep+str(i)
     # define sequence of NaNs for missing stuff, if any
     nanfield=sep+'nan'
-    nanfields=28*nanfield
+    # when doing LRT per SNP, we have 30 SNP-specific fields that can be missing
+    if args.lrt:
+        nanfields=30*nanfield
+    else: # otherwise, 28 SNP-specific fields
+        nanfields=28*nanfield
     # if converged and Hessian pd, calculate stats and write to assoc file
     if converged1 and min(D1)>MINEVAL:
+        # get inverse of Hessian
         invH1=np.linalg.inv(H1.reshape((K*TOTALCOLS,K*TOTALCOLS)))
+        # get OPG
         GGT1=(G1.reshape((K*TOTALCOLS,G1.shape[2])))@((G1.reshape((K*TOTALCOLS,G1.shape[2]))).T)
+        # get variance and standard errors of parameter estimates
         param1Var=invH1@GGT1@invH1
         param1SE=((np.diag(param1Var))**0.5).reshape((K,TOTALCOLS))
-        # calculate average partial effect on expectations, stdevs and correlation
+        # get covariance matrix for estimates of beta1 and beta2
         b1Var=(param1Var.reshape((K,TOTALCOLS,K,TOTALCOLS)))[:,BETA1COL,:,BETA1COL]
         b2Var=(param1Var.reshape((K,TOTALCOLS,K,TOTALCOLS)))[:,BETA2COL,:,BETA2COL]
+        # get individual-specific standard deviations for Y1 and Y2
         sig1=np.exp((X*param1[None,:,BETA1COL]).sum(axis=1))
         sig2=np.exp((X*param1[None,:,BETA2COL]).sum(axis=1))
+        # caclulate the APE of regressors on standard deviations
         snpAPEsig1=param1[-1,BETA1COL]*sig1[y1notnans].mean()
         snpAPEsig2=param1[-1,BETA2COL]*sig2[y2notnans].mean()
+        # calculate derivative of those APEs with respect to the SNPs
         deltaAPEsig1=param1[-1,BETA1COL]*(X*sig1[:,None])[y1notnans,:].mean(axis=0)
         deltaAPEsig2=param1[-1,BETA2COL]*(X*sig2[:,None])[y2notnans,:].mean(axis=0)
         deltaAPEsig1[-1]=sig1[y1notnans].mean()+deltaAPEsig1[-1]
         deltaAPEsig2[-1]=sig2[y2notnans].mean()+deltaAPEsig2[-1]
+        # calculate the standard error of the APEs using the Delta method
         snpAPEsig1SE=(deltaAPEsig1@b1Var@deltaAPEsig1)**0.5
         snpAPEsig2SE=(deltaAPEsig2@b2Var@deltaAPEsig2)**0.5
+        # get covariance matrix for estimates of gamma
         gcVar=(param1Var.reshape((K,TOTALCOLS,K,TOTALCOLS)))[:,GAMMACOL,:,GAMMACOL]
+        # get individual-specific delta (i.e. precursor of rho)
         delta=np.exp((X*param1[None,:,GAMMACOL]).sum(axis=1))
+        # use delta, to calculate individual-specific effect of SNP on rho, and average to get APE
         snpAPErho=param1[-1,GAMMACOL]*(2*delta/((delta+1)**2))[ybothnotnans].mean()
+        # calculate derivative of those APEs with respect to the SNPs
         deltaAPErho=2*param1[-1,GAMMACOL]\
             *(X*(((1-delta)/((1+delta)**3))[:,None]))[ybothnotnans,:].mean(axis=0)
         deltaAPErho[-1]=(2*delta/((delta+1)**2))[ybothnotnans].mean()+deltaAPErho[-1]
+        # calculate the standard error of the APEs using the Delta method
         snpAPErhoSE=(deltaAPErho@gcVar@deltaAPErho)**0.5
         # get SNP effect, standard error, inferences
         snp=param1[-1,:]
         snpSE=param1SE[-1,:]
-        snpLRT=2*ns*(logL1-logL0)
         snpWald=(snp/snpSE)**2
         snpPWald=1-stats.chi2.cdf(snpWald,1)
-        snpPLRT=1-stats.chi2.cdf(snpLRT,TOTALCOLS)
-        # add LRT results to line
-        outputline+=sep+str(snpLRT)+sep+str(snpPLRT)
+        # get estimated covariance matrix of all SNP-specific effects
+        snpVar=(param1Var.reshape((K,TOTALCOLS,K,TOTALCOLS)))[-1,:,-1,:]
+        jointWald=(snp[None,:]*np.linalg.inv(snpVar)*snp[:,None]).sum()
+        jointPWald=1-stats.chi2.cdf(jointWald,TOTALCOLS)
         # add results for effect on E[Y1] to line
         outputline+=sep+str(snp[ALPHA1COL])+sep+str(snpSE[ALPHA1COL])+sep+str(snpWald[ALPHA1COL])+sep+str(snpPWald[ALPHA1COL])
         # add results for effect on E[Y2] to line
@@ -1054,6 +1118,15 @@ def CalculateStats(ngeno,eaf,hweP,param1,logL1,H1,G1,D1,converged1,j,i\
         # add results for effect on Stdev(Y2) to line
         outputline+=sep+str(snp[GAMMACOL])+sep+str(snpSE[GAMMACOL])+sep+str(snpWald[GAMMACOL])+sep+str(snpPWald[GAMMACOL])\
                     +sep+str(snpAPErho)+sep+str(snpAPErhoSE)
+        # add results for Wald test on joint significance to line
+        outputline+=sep+str(jointWald)+sep+str(jointPWald)
+        # if we do LRT
+        if args.lrt:
+            # calculate statistic
+            snpLRT=2*ns*(logL1-logL0s)
+            snpPLRT=1-stats.chi2.cdf(snpLRT,TOTALCOLS)
+            # add LRT results to line
+            outputline+=sep+str(snpLRT)+sep+str(snpPLRT)
     else:
         # if model not converged: set NaNs as SNP results
         outputline+=nanfields
@@ -1419,6 +1492,8 @@ def ParseInputArguments():
                     help = 'option to estimate SNP-specific models using BFGS algorithm; cannot be combined with --simul-only')
     parser.add_argument('--one', metavar = '', default = None, nargs= '+',
                     help = '\b\b\b\b\b\b\b\b\b\b\b\b\b\b\bNUMBER INTEGER option to perform 1-step efficient estimation, by randomly sampling a fraction (1st input argument; between 0 and 1) of the observations, to obtain estimates that serve as starting point for a single Newton step based on full data; 2nd input argument is the seed for the random-number generator for the random sampling; cannot be combined with --simul-only')
+    parser.add_argument('--lrt', action = 'store_true',
+                    help = 'option to perform a likelihood-ratio test for the joint significance per SNP; this test can be more reliable than the Wald test for joint significance; WARNING: this test can double the CPU time for SNPs with any missingness; WARNING: this test can be overly conservative when combined with --one; cannot be combined with --simul-only')
     parser.add_argument('--snp', metavar = '', default = None, type = positive_int, nargs= '+',
                     help = '\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\bINTEGER INTEGER option to analyse only SNP with index j=s,...,t, where s=1st integer and t=2nd integer; cannot be combined with --simul-only')
     parser.add_argument('--out', metavar = 'PREFIX', default = None, type = str,
@@ -1590,6 +1665,8 @@ def CheckInputArgs():
         onestep=True
     else:
         onestep=False
+    if args.lrt and args.simul_only:
+        raise SyntaxError('--simul-only cannot be combined with --lrt')
 
 def FindBlockSize():
     global dimg
