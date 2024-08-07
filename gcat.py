@@ -24,7 +24,8 @@ MINM=1
 ARMIJO=1E-4
 thetainv=2/(1+5**0.5)
 oneminthetainv=1-thetainv
-RESULTSMBLOCK=2000
+RESULTSMBLOCK=100
+READMBLOCK=1000
 
 # where different types of parameters are located parameters array
 ALPHA1COL=0
@@ -602,7 +603,7 @@ def GCAT():
     (param0,logL0,grad0,H0,D0,converged0,wG0,wH0)=Newton(param0,y1,y2,y1notnan,y2notnan,ybothnotnan,n,nboth,N,x,k)
     # write baseline model estimates to output file
     pd.DataFrame(param0,columns=['ALPHA1','ALPHA2','BETA1','BETA2','GAMMA'],\
-                 index=xlabels).to_csv(args.out+extBASE,sep=sep)                     
+                 index=xlabels).to_csv(args.out+extBASE,sep=sep)
     # if baseline model did not converge: throw error
     if not(converged0):
         raise RuntimeError('Estimates baseline model (=no SNPs) not converged')
@@ -1164,12 +1165,11 @@ def SimulateG():
     connfrq=open(args.out+extFRQ,'w')
     connfrq.write('CHR'+sep+'SNP'+sep+'A1'+sep+'A2'+sep+'AF1'+sep+'AF2'+eol)
     # calculate how many SNPs can be simulated at once (at least 1)
-    Mperb=max(int(dimg/n),1)
-    logger.info('Simulating SNPs and writing .bim file in blocks of '+str(Mperb)+' SNPs')
+    logger.info('Simulating SNPs and writing .bim file in blocks of '+str(READMBLOCK)+' SNPs')
     # count modulo(m,#SNPs per block)
-    MR=M%Mperb
+    MR=M%READMBLOCK
     # count number of blocks (i.e. complete + remainder block if any)
-    B=int(M/Mperb)+(MR>0)
+    B=int(M/READMBLOCK)+(MR>0)
     # count number of full bytes per SNP
     nb=int(n/nperbyte)
     # compute how many individuals in remainder byte per SNP
@@ -1183,8 +1183,8 @@ def SimulateG():
     # for each blok
     for b in tqdm(range(B)):
         # find index for first SNP and last SNP in block
-        m0=b*Mperb
-        m1=min(M,(b+1)*Mperb)
+        m0=b*READMBLOCK
+        m1=min(M,(b+1)*READMBLOCK)
         # count number of SNP in this block
         m=m1-m0
         # draw allele frequencies between (TAUTRUEMAF,1-TAUTRUEMAF)
@@ -1262,12 +1262,10 @@ def SimulateY():
     # print update
     logger.info('Found '+str(n)+' individuals in '+args.bfile+extFAM)
     logger.info('Found '+str(M)+' SNPs in '+args.bfile+extBIM)
-    # calculate how many SNPs can be read at once (at least 1)
-    Mperb=max(int(dimg/n),1)
     # count modulo(m,#SNPs per block)
-    MR=M%Mperb
+    MR=M%READMBLOCK
     # count number of blocks (i.e. complete + remainder block if any)
-    B=int(M/Mperb)+(MR>0)
+    B=int(M/READMBLOCK)+(MR>0)
     # count number of full bytes per SNP
     nb=int(n/nperbyte)
     # compute how many individuals in remainder byte per SNP
@@ -1286,7 +1284,7 @@ def SimulateY():
     # compute rounded n (i.e. empty including empty bits)
     roundedn=nbt*nperbyte
     # get rowid of first two bits per byte being read
-    ids=nperbyte*np.arange(nbt*Mperb)
+    ids=nperbyte*np.arange(nbt*READMBLOCK)
     # connect to read bed and bim files
     connbed=open(args.bfile+extBED,'rb')
     connbim=open(args.bfile+extBIM,'r')
@@ -1305,11 +1303,11 @@ def SimulateY():
                     +'BETA1'+sep\
                     +'BETA2'+sep\
                     +'GAMMA'+eol)
-    logger.info('Reading in '+args.bfile+extBED+' in blocks of '+str(Mperb)+' SNPs')
+    logger.info('Reading in '+args.bfile+extBED+' in blocks of '+str(READMBLOCK)+' SNPs')
     # for each blok
     for b in tqdm(range(B)):
         # count number of SNP in this block
-        m=min(M,(b+1)*Mperb)-b*Mperb
+        m=min(M,(b+1)*READMBLOCK)-b*READMBLOCK
         # calculate how many bytes per read
         bytesperread=m*nbt
         # calculate how many distinct genotypes per read
@@ -1668,13 +1666,6 @@ def CheckInputArgs():
     if args.lrt and args.simul_only:
         raise SyntaxError('--simul-only cannot be combined with --lrt')
 
-def FindBlockSize():
-    global dimg
-    # assigning 1% of available RAM to storage of raw genotypes
-    # calculate how many raw genotypes can be held in RAM
-    availtotal=(psutil.virtual_memory()[1])
-    dimg=int(0.002*availtotal)
-
 def main():
     # set parser, logger, memory tracker as globals
     global parser,logger,process
@@ -1695,8 +1686,6 @@ def main():
         ShowWelcome()
         # Perform basic checks on input arguments
         CheckInputArgs()
-        # Determine block size with which we can process SNPs staying within RAM
-        FindBlockSize()
         # Simulate genotypes if necessary
         if simulg:
             logger.info(eol+'SIMULATING GENOTYPES')
