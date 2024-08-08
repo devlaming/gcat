@@ -1,4 +1,4 @@
-# GCAT (Genome-wide Cross-trait concordance Analysis Tool) `beta v0.1`
+# GCAT (Genome-wide Cross-trait concordance Analysis Tool) `beta v0.2`
 
 `gcat` is a Python 3.x package for estimating the effects of SNPs on trait levels, variance, and covariance.
 
