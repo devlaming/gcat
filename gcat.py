@@ -537,15 +537,14 @@ class Analyser:
                 if onestep:
                     (converged1,i1)=BFGS(data1)
                 else: # else, catch all relevant output
-                    (logL1,G1,D1,P1,converged1,i1)=BFGS(data1)
+                    (logL1,GGT1,D1,P1,converged1,i1)=BFGS(data1)
             else:
                 # if 1-step efficient estimation, only catch whether converged
                 # and number of iterations
                 if onestep:
-                    (converged1,i1)=Newton(data1,baseline=False,\
-                                                silent=True)
+                    (converged1,i1)=Newton(data1,baseline=False,silent=True)
                 else: # else, catch all relevant output
-                    (logL1,G1,D1,P1,converged1,i1)=Newton(data1,\
+                    (logL1,GGT1,D1,P1,converged1,i1)=Newton(data1,\
                                                     baseline=False,silent=True)
             # if 1-step efficient estimation
             if onestep:
@@ -558,23 +557,23 @@ class Analyser:
                 # replace baseline estimates by estimates small data with snp
                 data1.param=param1
                 # take one Newton step
-                (logL1,G1,D1,P1,_,_)=Newton(data1,baseline=False,\
+                (logL1,GGT1,D1,P1,_,_)=Newton(data1,baseline=False,\
                                                  silent=True,onestepfinal=True)
             # retrieve final parameter estimates from full data
             param1=data1.param
         else: # else don't even try: just return nan/none values
-            (param1,logL1,G1,D1,P1,converged1,i1)=\
+            (param1,logL1,GGT1,D1,P1,converged1,i1)=\
                 (None,None,None,[0],None,False,None)
         # calculate and store estimates, standard errors, etc.
         outputline=self.CalculateStats(j,gisnan,ngeno,eaf,hweP,param1,logL1,\
-                                  G1,D1,P1,converged1,i1,data1)
+                                  GGT1,D1,P1,converged1,i1,data1)
         # update progress bar
         self.pbar.update(1)
         # return output line with results
         return outputline
 
     def CalculateStats(self,j,gisnan,ngeno,eaf,hweP,param1,logL1,\
-                    G1,D1,P1,converged1,i1,data1):
+                    GGT1,D1,P1,converged1,i1,data1):
         # read line from bim file, strip trailing newline, split by tabs
         snpline=linecache.getline(args.bfile+extBIM,j+1).rstrip(eol).split(sep)
         # get chromosome number, snp ID, baseline allele, and effect allele
@@ -596,9 +595,6 @@ class Analyser:
             nanfields=28*nanfield
         # if converged and Hessian pd, calculate stats and write to assoc file
         if converged1 and min(D1)>MINEVAL:
-            # get OPG
-            GGT1=(G1.reshape((data1.k*TOTALCOLS,G1.shape[2])))@\
-                ((G1.reshape((data1.k*TOTALCOLS,G1.shape[2]))).T)
             # get inverse of -Hessian and variance matrix
             invMH1=(P1/D1[None,:])@P1.T
             param1Var=invMH1@GGT1@invMH1
@@ -732,10 +728,8 @@ def Newton(data,baseline=True,silent=False,\
             if reestimation: return logL,converged
             if onestep and not(onestepfinal): return converged,i
             return logL,None,[0],None,converged,i
-        # unpack Hessian to matrix
-        UH=H.reshape((data.k*TOTALCOLS,data.k*TOTALCOLS))
-        # get (bended) EVD of unpacked -Hessian
-        (Dadj,P,D)=BendEVDSymPSD(-UH)
+        # get (bended) EVD of -Hessian
+        (Dadj,P,D)=BendEVDSymPSD(-H)
         # get Newton-Raphson update
         update=(P@((((grad.reshape((data.k*TOTALCOLS,1))).T@P)/Dadj).T))\
             .reshape((data.k,TOTALCOLS))
@@ -786,10 +780,10 @@ def Newton(data,baseline=True,silent=False,\
     if onestep and not(onestepfinal):
         # return number of iterations and whether converged
         return converged,i
-    # calculate contribution each individual to grad (for robust SEs)
-    G=CalcLogL(data,Gonly=True,useexistingweights=True)
-    # return logL, grad contributions, EVD -H, converged, iterations
-    return logL,G,D,P,converged,i
+    # calculate OPG (for robust SEs)
+    GGT=CalcLogL(data,Gonly=True,useexistingweights=True)
+    # return logL, OPG, EVD -H, converged, iterations
+    return logL,GGT,D,P,converged,i
 
 def BFGS(data,reestimation=False):
     # set iteration counter to 0 and convergence to false
@@ -797,10 +791,8 @@ def BFGS(data,reestimation=False):
     converged=False
     # calculate logL, grad, Hessian using weights baseline model
     (logL,grad,H)=CalcLogL(data,useexistingweights=True)
-    # unpack Hessian to matrix
-    UH=H.reshape((data.k*TOTALCOLS,data.k*TOTALCOLS))
-    # get (bended) EVD of unpacked -Hessian
-    (Dadj,P,D)=BendEVDSymPSD(-UH)
+    # get (bended) EVD of -Hessian
+    (Dadj,P,D)=BendEVDSymPSD(-H)
     # initialise approximated inverse Hessian
     AIH=-(P*(1/Dadj[None,:]))@P.T
     # while not converged and MAXITER not reached
@@ -859,14 +851,12 @@ def BFGS(data,reestimation=False):
     if onestep:
         # return number of iterations and whether converged
         return converged,i
-    # calculate logL, G, H at BFGS solution
-    (logL,G,H)=CalcLogL(data,Ginsteadofgrad=True)
-    # unpack Hessian to matrix
-    UH=H.reshape((data.k*TOTALCOLS,data.k*TOTALCOLS))
+    # calculate logL, OPG, H at BFGS solution
+    (logL,GGT,H)=CalcLogL(data,Ginsteadofgrad=True)
     # get (bended) EVD of unpacked -Hessian
-    (_,P,D)=BendEVDSymPSD(-UH)
-    # return logL, grad contributions, EVD -H, converged, iterations
-    return logL,G,D,P,converged,i
+    (_,P,D)=BendEVDSymPSD(-H)
+    # return logL, OPG, EVD -H, converged, iterations
+    return logL,GGT,D,P,converged,i
 
 def GoldenSection(data,logL,grad,update,bfgs=False):
     # calculate update'grad
@@ -943,16 +933,16 @@ def CalcLogL(data,param=None,useexistingweights=False,\
     # if only contribution per individual to gradient wanted
     # and we can use weights from previous calculation
     if useexistingweights and Gonly:
-        # calculate and return that using weights from before
-        G=((data.x.T[:,None,:])*(data.wG.T[None,:,:]))/data.n
-        return G
+        # calculate and return OPG
+        GGT=CalculateOPG(data.x,data.wG,data.n)
+        return GGT
     # if we can use weights from previous calculation to get logL,grad,H
     if useexistingweights:
         # calculate log-likelihood/n and gradient/n using those weights
         logL=(data.wL.sum())/data.n
         grad=(data.x.T@data.wG)/data.n
         # calculate Hessian/n using those weights
-        H=CalculateHessian(data.x,data.wH)/data.n
+        H=CalculateHessian(data.x,data.wH,data.n)
         # return those components
         return logL,grad,H
     # if parameters not provided, use what's in data
@@ -1054,10 +1044,11 @@ def CalcLogL(data,param=None,useexistingweights=False,\
         return grad
     # calculate G (individual-specific contributions grad/n) only if necessary
     if Gonly or Ginsteadofgrad:
-        G=((data.x.T[:,None,:])*(wG.T[None,:,:]))/data.n
-    # if only G wanted, return that
+        # calculate OPG
+        GGT=CalculateOPG(data.x,wG,data.n)
+    # if only OPG wanted, return that
     if Gonly:
-        return G
+        return GGT
     # calculate key ingredients for Hessian
     rhodivunexp=rho*invunexp
     rhosqplus1=1+rhosq
@@ -1100,15 +1091,15 @@ def CalcLogL(data,param=None,useexistingweights=False,\
         # return weights
         return wL,wG,wH
     # calculate Hessian/n
-    H=CalculateHessian(data.x,wH)/data.n
+    H=CalculateHessian(data.x,wH,data.n)
     # if we also need the individual-specific weights for gradient
     if alsogradweights:
         # return logL, gradient, Hessian, and those weights
         return logL,grad,H,wG
-    # if we need G instead of grad
+    # if we need OPG instead of grad
     if Ginsteadofgrad:
-        # return logL, G, Hessian
-        return logL,G,H
+        # return logL, OPG, Hessian
+        return logL,GGT,H
     # otherwise, return logL, gradient, Hessian
     return logL,grad,H
 
@@ -1567,7 +1558,32 @@ def number_between_m1_p1(string):
         raise argparse.ArgumentTypeError("%s is not a number in the"+\
                                          " interval (-1,1)" % val)
 
-def CalculateHessian(X,W):
+def CalculateOPG(X,W,n):
+    '''
+    Calculate OPG of log-likelihood function, given matrix of regressors
+    and individual-specific weights for the various submatrices of the Hessian
+
+    Args:
+        X (ndarray): N-by-K matrix of regressors
+        W (ndarray): N-by-TOTALCOLS array of weights
+        n (int): sample size of analysis, to divide G for numerical stability
+    
+    Returns:
+        GGT (ndarray): (K*TOTALCOLS)-by-(K*TOTALCOLS) OPG matrix
+    '''
+    K=X.shape[1]
+    GGT=np.empty((K,TOTALCOLS,K,TOTALCOLS))
+    for i in range(TOTALCOLS):
+        for j in range(i,TOTALCOLS):
+            # calculate OPG for component i vs. j and j vs. i
+            GGT[:,i,:,j]=(X*(W[:,None,i]/n)).T@(X*(W[:,None,j]/n))
+            if j>i:
+                # use symmetry to find out counterparts
+                GGT[:,j,:,i]=GGT[:,i,:,j]
+    # return unpacked OPG
+    return GGT.reshape((K*TOTALCOLS,K*TOTALCOLS))
+
+def CalculateHessian(X,W,n):
     '''
     Calculate Hessian of log-likelihood function, given matrix of regressors
     and individual-specific weights for the various submatrices of the Hessian
@@ -1575,20 +1591,22 @@ def CalculateHessian(X,W):
     Args:
         X (ndarray): N-by-K matrix of regressors
         W (ndarray): N-by-(TOTALCOLS-by-TOTALCOLS) array of weights
+        n (int): sample size of analysis, to divide H for numerical stability
     
     Returns:
-        H (ndarray): (K-by-TOTALCOLS)-by-(K-by-TOTALCOLS) Hessian array
+        H (ndarray): (K*TOTALCOLS)-by-(K*TOTALCOLS) Hessian matrix
     '''
     K=X.shape[1]
     H=np.empty((K,TOTALCOLS,K,TOTALCOLS))
     for i in range(TOTALCOLS):
         for j in range(i,TOTALCOLS):
             # calculate Hessian for component i vs. j and j vs. i
-            H[:,i,:,j]=(X.T@(X*W[:,None,i,j]))
+            H[:,i,:,j]=(X.T@(X*W[:,None,i,j]))/n
             if j>i:
                 # use symmetry to find out counterparts
                 H[:,j,:,i]=H[:,i,:,j]
-    return H
+    # return unpacked Hessian
+    return H.reshape((K*TOTALCOLS,K*TOTALCOLS))
 
 def BendEVDSymPSD(A):
     '''
