@@ -717,13 +717,18 @@ def Newton(data,baseline=True,silent=False,\
     # set iteration counter to 0 and convergence to false
     i=0
     converged=False
-    # if baseline model or final part of one-step efficient estimation
-    if baseline or onestepfinal: 
+    # if baseline model
+    if baseline:
         # fully calculate log-likelihood, gradient, Hessian
         (logL,grad,H)=CalcLogL(data)
-    else: # if SNP-specific model
+    elif onestepfinal: # if final step (i.e. full data) of 1-step estimation
+        # fully calculate log-likelihood, gradient, Hessian, wG
+        (logL,grad,H,wG)=CalcLogL(data,alsogradweights=True)
+        # store individual-specific weights for gradient
+        data.wG=wG
+    else: # all other cases
         # calculate logL, grad, Hessian using weights baseline model
-        (logL,grad,H)=CalcLogL(data,useweightsbaseline=True)
+        (logL,grad,H)=CalcLogL(data,useexistingweights=True)
     # while not converged and MAXITER not reached
     while not(converged) and i<MAXITER:
         # if logL is -infinity: quit; on a dead track for this model
@@ -746,10 +751,10 @@ def Newton(data,baseline=True,silent=False,\
             .reshape((data.k,TOTALCOLS))
         # calculate convergence criterion
         msg=(update*grad).mean()
-        # if converged: convergenced=True
+        # if convergence criterion met or last step 1-step estimation is done
         if msg<TOL or (onestepfinal and i>0):
             converged=True
-        else: # if not converged yet
+        else: # otherwise
             # do line search if baseline model or linesearch is activated
             if baseline or linesearch:
                 (j,step)=GoldenSection(data,logL,grad,update)
@@ -763,8 +768,15 @@ def Newton(data,baseline=True,silent=False,\
                     report+='; '+str(j)+' line-search steps,'+\
                             ' yielding step size = '+str(step)
                 logger.info(report)
-            # calculate new log-likelihood, gradient, Hessian
-            (logL,grad,H)=CalcLogL(data)
+            # if baseline model or, 1-step estimation but not final step
+            if baseline or (onestep and not(onestepfinal)):
+                # calculate new log-likelihood, gradient, Hessian
+                (logL,grad,H)=CalcLogL(data)
+            else:
+                # calculate new log-likelihood, gradient, Hessian, wG
+                (logL,grad,H,wG)=CalcLogL(data,alsogradweights=True)
+                # store individual-specific weights for gradient
+                data.wG=wG
     # if baseline model
     if baseline:
         # get individual-specific weights (for iter 1 SNP-specific model)
@@ -780,13 +792,12 @@ def Newton(data,baseline=True,silent=False,\
     if reestimation:
         # return logL and whether converged
         return logL,converged
-    # if 1-step efficient estimation (full convergence in small sample)
-    # and this is not the single step in large sample
+    # if 1-step estimation but not final step
     if onestep and not(onestepfinal):
         # return number of iterations and whether converged
         return converged,i
     # calculate contribution each individual to grad (for robust SEs)
-    G=CalcLogL(data,Gonly=True)
+    G=CalcLogL(data,Gonly=True,useexistingweights=True)
     # return logL, grad contributions, EVD -H, converged, iterations
     return logL,G,D,P,converged,i
 
@@ -795,7 +806,7 @@ def BFGS(data,reestimation=False):
     i=0
     converged=False
     # calculate logL, grad, Hessian using weights baseline model
-    (logL,grad,H)=CalcLogL(data,useweightsbaseline=True)
+    (logL,grad,H)=CalcLogL(data,useexistingweights=True)
     # unpack Hessian to matrix
     UH=H.reshape((data.k*TOTALCOLS,data.k*TOTALCOLS))
     # get (bended) EVD of unpacked -Hessian
@@ -858,14 +869,12 @@ def BFGS(data,reestimation=False):
     if onestep:
         # return number of iterations and whether converged
         return converged,i
-    # calculate logL, grad, H at BFGS solution
-    (logL,grad,H)=CalcLogL(data)
+    # calculate logL, G, H at BFGS solution
+    (logL,G,H)=CalcLogL(data,Ginsteadofgrad=True)
     # unpack Hessian to matrix
     UH=H.reshape((data.k*TOTALCOLS,data.k*TOTALCOLS))
     # get (bended) EVD of unpacked -Hessian
-    (Dadj,P,D)=BendEVDSymPSD(-UH)
-    # calculate contribution each individual to grad (for robust SEs)
-    G=CalcLogL(data,Gonly=True)
+    (_,P,D)=BendEVDSymPSD(-UH)
     # return logL, grad contributions, EVD -H, converged, iterations
     return logL,G,D,P,converged,i
 
@@ -937,15 +946,22 @@ def GoldenSection(data,logL,grad,update,bfgs=False):
     data.param=param4
     return j,step4
 
-def CalcLogL(data,param=None,useweightsbaseline=False,\
+def CalcLogL(data,param=None,useexistingweights=False,\
                 weightsonly=False,logLonly=False,logLgradonly=False,\
-                Gonly=False,gradonly=False):
-    # if we can use weights from estimated baseline model
-    if useweightsbaseline:
-        # calculate log-likelihood/n and gradient/n
+                Gonly=False,gradonly=False,alsogradweights=False,\
+                Ginsteadofgrad=False):
+    # if only contribution per individual to gradient wanted
+    # and we can use weights from previous calculation
+    if useexistingweights and Gonly:
+        # calculate and return that using weights from before
+        G=((data.x.T[:,None,:])*(data.wG.T[None,:,:]))/data.n
+        return G
+    # if we can use weights from previous calculation to get logL,grad,H
+    if useexistingweights:
+        # calculate log-likelihood/n and gradient/n using those weights
         logL=(data.wL.sum())/data.n
         grad=(data.x.T@data.wG)/data.n
-        # calculate Hessian/n
+        # calculate Hessian/n using those weights
         H=CalculateHessian(data.x,data.wH)/data.n
         # return those components
         return logL,grad,H
@@ -1038,7 +1054,7 @@ def CalcLogL(data,param=None,useweightsbaseline=False,\
     wG[~data.y1notnan,BETA1COL]=0
     wG[~data.y2notnan,BETA2COL]=0
     # calculate gradient only if necessary
-    if logLgradonly or gradonly or (not(Gonly) and not(weightsonly)):
+    if logLgradonly or gradonly or not(Gonly or Ginsteadofgrad or weightsonly):
         grad=(data.x.T@wG)/data.n
     # if only logL and grad desired, return that
     if logLgradonly:
@@ -1046,11 +1062,11 @@ def CalcLogL(data,param=None,useweightsbaseline=False,\
     # if only gradient desired, return that
     if gradonly:
         return grad
-    # if only contribution per individual to gradient wanted
-    if Gonly:
-        # calculate individual-specific contributions grad/n as 3d array
+    # calculate G (individual-specific contributions grad/n) only if necessary
+    if Gonly or Ginsteadofgrad:
         G=((data.x.T[:,None,:])*(wG.T[None,:,:]))/data.n
-        # and return that
+    # if only G wanted, return that
+    if Gonly:
         return G
     # calculate key ingredients for Hessian
     rhodivunexp=rho*invunexp
@@ -1095,6 +1111,15 @@ def CalcLogL(data,param=None,useweightsbaseline=False,\
         return wL,wG,wH
     # calculate Hessian/n
     H=CalculateHessian(data.x,wH)/data.n
+    # if we also need the individual-specific weights for gradient
+    if alsogradweights:
+        # return logL, gradient, Hessian, and those weights
+        return logL,grad,H,wG
+    # if we need G instead of grad
+    if Ginsteadofgrad:
+        # return logL, G, Hessian
+        return logL,G,H
+    # otherwise, return logL, gradient, Hessian
     return logL,grad,H
 
 # define class for reading genotypes
