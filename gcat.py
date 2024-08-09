@@ -415,11 +415,17 @@ class Analyser:
             logger.info('Keeping random subsample of '+str(len(keep))\
                         +' individuals for one-step efficient estimation')
             self.datasmall.Subsample(keep)
-        # report whether BFGS or Newton used
-        if args.bfgs:
-            logger.info('Estimation SNP-specific models using BFGS algorithm:')
-        else:
+        # report whether BFGS or Newton and whether line search is used
+        if args.bfgs and not(linesearch):
+            logger.info('Estimation SNP-specific models using BFGS:')
+        elif args.bfgs and linesearch:
+            logger.info('Estimation SNP-specific models using BFGS'+\
+                        ' with golden-section line search:')
+        elif not(args.bfgs) and not(linesearch): 
             logger.info('Estimation SNP-specific models using Newton method:')
+        else:
+            logger.info('Estimation SNP-specific models using Newton method'+\
+                        ' with golden-section line search:')
     
     def EstimateSNPModels(self):
         # connect to write association results file
@@ -820,23 +826,29 @@ def BFGS(data,reestimation=False):
                 paramnew=data.param+update
                 (logLnew,gradnew)=\
                     CalcLogL(data,param=paramnew,logLgradonly=True)
-            # calculate quantities needed for BFGS
-            s=(paramnew-data.param).reshape((data.k*TOTALCOLS,1))
-            y=(gradnew-grad).reshape((data.k*TOTALCOLS,1))
-            sty=(s*y).sum()
-            r=1/sty
-            v=s*r
-            w=AIH@y
-            # store new parameters, grad, logL
-            data.param=paramnew
-            grad=gradnew
-            logL=logLnew
-            # update approximated inverse Hessian and stabilise
-            AIH=AIH-np.outer(v,w)-np.outer(w,v)+\
-                np.outer(v,v)*((w*y).sum())+np.outer(v,s)
-            AIH=(AIH+(AIH.T))/2
-            # update iteration counter
-            i+=1
+            # complete update if new log-likelihood is not -infinity
+            if not(np.isinf(logLnew)):
+                # calculate quantities needed for BFGS
+                s=(paramnew-data.param).reshape((data.k*TOTALCOLS,1))
+                y=(gradnew-grad).reshape((data.k*TOTALCOLS,1))
+                sty=(s*y).sum()
+                r=1/sty
+                v=s*r
+                w=AIH@y
+                # store new parameters, grad, logL
+                data.param=paramnew
+                grad=gradnew
+                logL=logLnew
+                # update approximated inverse Hessian and stabilise
+                AIH=AIH-np.outer(v,w)-np.outer(w,v)+\
+                    np.outer(v,v)*((w*y).sum())+np.outer(v,s)
+                AIH=(AIH+(AIH.T))/2
+                # update iteration counter
+                i+=1
+            else:
+                # otherwise only set logL to -np.inf, causing BFGS to stop
+                # because of condition at start of while loop
+                logL=-np.inf
     # if re-estimation for LRT (for subsample with nonmissing genotype)
     if reestimation:
         # return logL and whether converged
