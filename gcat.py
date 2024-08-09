@@ -192,33 +192,6 @@ class Data:
             self.InitialiseParams()
             self.Clean()
     
-    def copy(self):
-        # make copy of main data, in form of Data instance
-        data=Data(self.x.copy(),self.xlabels.copy(),self.y1.copy(),\
-                  self.y1label,self.y2.copy(),self.y2label,copy=True)
-        # also copy booleans and indices of remaining PLINK data
-        data.y1notnan=self.y1notnan.copy()
-        data.y2notnan=self.y2notnan.copy()
-        data.ybothnotnan=self.ybothnotnan.copy()
-        data.y1ory2notnan=self.y1ory2notnan.copy()
-        data.ind=self.ind.copy()
-        # also copy parameter estimates, individual-specific weights, logL
-        data.param=self.param.copy()
-        data.wL=self.wL.copy()
-        data.wG=self.wG.copy()
-        data.wH=self.wH.copy()
-        data.logL=self.logL
-        # also copy counts
-        data.n1=self.n1
-        data.n2=self.n2
-        data.nboth=self.nboth
-        data.n=self.n
-        data.N=self.N
-        data.nrow=self.nrow
-        data.k=self.k
-        # return new Data instance
-        return data
-    
     def InitialiseParams(self):
         # report update stats
         logger.info('Filtered out observations with missingness')
@@ -302,6 +275,31 @@ class Data:
         # count dimensionality
         self.nrow=self.x.shape[0]
         self.k=self.x.shape[1]
+    
+    def copysubset(self,keep=None):
+        # if keep is not defined, keep all observations when copying
+        if keep is None:
+            keep=np.ones(self.nrow,dtype=np.bool_)
+        # make copy of main data, in form of Data instance
+        data=Data(self.x[keep,:].copy(),self.xlabels.copy(),\
+                  self.y1[keep].copy(),self.y1label,
+                  self.y2[keep].copy(),self.y2label,copy=True)
+        # also copy booleans and indices of remaining PLINK data
+        data.y1notnan=self.y1notnan[keep].copy()
+        data.y2notnan=self.y2notnan[keep].copy()
+        data.ybothnotnan=self.ybothnotnan[keep].copy()
+        data.y1ory2notnan=self.y1ory2notnan[keep].copy()
+        data.ind=self.ind[keep].copy()
+        # also copy parameter estimates, individual-specific weights, logL
+        data.param=self.param.copy()
+        data.wL=self.wL[keep].copy()
+        data.wG=self.wG[keep,:].copy()
+        data.wH=self.wH[keep,:,:].copy()
+        data.logL=self.logL
+        # update counts
+        data.GetCounts()
+        # return new Data instance
+        return data
     
     def Subsample(self,keep):
         # keep x, y1, y2 for subset of observations
@@ -405,8 +403,6 @@ class Analyser:
                      index=self.data.xlabels).to_csv(args.out+extBASE,sep=sep)
         # if one-step efficient estimation
         if onestep:
-            # make copy of the data
-            self.datasmall=self.data.copy()
             # initialise random-number generator
             rng=np.random.default_rng(args.one[1])
             # randomly sample the desired proportion
@@ -414,7 +410,8 @@ class Analyser:
                          [:min(int(self.nPLINK*args.one[0]),self.data.nrow)])
             logger.info('Keeping random subsample of '+str(len(keep))\
                         +' individuals for one-step efficient estimation')
-            self.datasmall.Subsample(keep)
+            # make copy of the data, keeping the desired subset
+            self.datasmall=self.data.copysubset(keep)
         # report whether BFGS or Newton and whether line search is used
         if args.bfgs and not(linesearch):
             logger.info('Estimation SNP-specific models using BFGS:')
@@ -525,11 +522,11 @@ class Analyser:
         # if 1-step efficient estimation
         if onestep:
             # set small data as main data
-            data1=self.datasmall.copy()
+            data1=self.datasmall.copysubset()
             # and add the SNP of interest
             data1.AddSNP(g,gisnan)
         else: # else: set large data as main data, and add SNP
-            data1=self.data.copy()
+            data1=self.data.copysubset()
             data1.AddSNP(g,gisnan)
         # estimate, provided nboth>=MINN
         if data1.nboth>=MINN:
@@ -555,7 +552,7 @@ class Analyser:
                 # get final estimates from small data
                 param1=data1.param
                 # set large data as main data
-                data1=self.data.copy()
+                data1=self.data.copysubset()
                 # add SNP of interest
                 data1.AddSNP(g,gisnan)
                 # replace baseline estimates by estimates small data with snp
@@ -565,152 +562,145 @@ class Analyser:
                                                  silent=True,onestepfinal=True)
             # retrieve final parameter estimates from full data
             param1=data1.param
-            # if LRT required
-            if args.lrt:
-                # if any difference in observations considered in baseline vs.
-                # SNP-specific model (due to SNP missingness)
-                if self.data.N!=data1.N:
-                    # set large data as main data
-                    data0=self.data.copy()
-                    # keeping only observations where the SNP is not missing
-                    data0.Subsample(~gisnan)
-                    # use Newton or BFGS to get null model estimates for
-                    # subset of observations in SNP-specific model               
-                    if args.bfgs:
-                        (logL0,converged0)=BFGS(data0,reestimation=True)
-                    else:
-                        (logL0,converged0)=Newton(data0,baseline=False,\
-                                                silent=True,reestimation=True)
-                    # only keep logL0 if converged, otherwise set to NaN
-                    if not(converged0):
-                        logL0=np.nan
-                else: # else: get logL0 from estimates baseline model
-                    logL0=self.data.logL
-            else:
-                # set logL0 to NaN
-                logL0=np.nan
         else: # else don't even try: just return nan/none values
-            (param1,logL1,logL0,G1,D1,P1,converged1,i1)=\
-                (None,None,None,None,[0],None,False,None)
+            (param1,logL1,G1,D1,P1,converged1,i1)=\
+                (None,None,None,[0],None,False,None)
         # calculate and store estimates, standard errors, etc.
-        outputline=CalculateStats(j,ngeno,eaf,hweP,param1,logL1,logL0,\
+        outputline=self.CalculateStats(j,gisnan,ngeno,eaf,hweP,param1,logL1,\
                                   G1,D1,P1,converged1,i1,data1)
         # update progress bar
         self.pbar.update(1)
         # return output line with results
         return outputline
 
-def CalculateStats(j,ngeno,eaf,hweP,param1,logL1,logL0,\
-                   G1,D1,P1,converged1,i1,data1):
-    # read line from bim file, strip trailing newline, split by tabs
-    snpline=linecache.getline(args.bfile+extBIM,j+1).rstrip(eol).split(sep)
-    # get chromosome number, snp ID, baseline allele, and effect allele
-    snpchr=snpline[0]
-    snpid=snpline[1]
-    snpbaseallele=snpline[4]
-    snpeffallele=snpline[5]
-    # build up line to write
-    outputline=snpchr+sep+snpid+sep+snpbaseallele+sep+str(1-eaf)+sep\
-               +snpeffallele+sep+str(eaf)+sep+str(hweP)+sep+str(ngeno)+sep\
-               +str(data1.n1)+sep+str(data1.n2)+sep+str(data1.nboth)+sep\
-               +str(i1)
-    # define sequence of NaNs for missing stuff, if any
-    nanfield=sep+'nan'
-    # when doing LRT per SNP: 30 SNP-specific fields that can be missing
-    if args.lrt:
-        nanfields=30*nanfield
-    else: # else: 28 SNP-specific fields
-        nanfields=28*nanfield
-    # if converged and Hessian pd, calculate stats and write to assoc file
-    if converged1 and min(D1)>MINEVAL:
-        # get OPG
-        GGT1=(G1.reshape((data1.k*TOTALCOLS,G1.shape[2])))@\
-             ((G1.reshape((data1.k*TOTALCOLS,G1.shape[2]))).T)
-        # get inverse of -Hessian and variance matrix
-        invMH1=(P1/D1[None,:])@P1.T
-        param1Var=invMH1@GGT1@invMH1
-        # get standard errors of parameter estimates
-        param1SE=((np.diag(param1Var))**0.5).reshape((data1.k,TOTALCOLS))
-        # get covariance matrix for estimates of beta1 and beta2
-        b1Var=(param1Var.reshape((data1.k,TOTALCOLS,\
-                                  data1.k,TOTALCOLS)))[:,BETA1COL,:,BETA1COL]
-        b2Var=(param1Var.reshape((data1.k,TOTALCOLS,\
-                                  data1.k,TOTALCOLS)))[:,BETA2COL,:,BETA2COL]
-        # get individual-specific standard deviations for Y1 and Y2
-        sig1=np.exp((data1.x*param1[None,:,BETA1COL]).sum(axis=1))
-        sig2=np.exp((data1.x*param1[None,:,BETA2COL]).sum(axis=1))
-        # caclulate the APE of regressors on standard deviations
-        snpAPEsig1=param1[-1,BETA1COL]*sig1[data1.y1notnan].mean()
-        snpAPEsig2=param1[-1,BETA2COL]*sig2[data1.y2notnan].mean()
-        # calculate derivative of those APEs with respect to the SNPs
-        deltaAPEsig1=param1[-1,BETA1COL]*\
-                     (data1.x*sig1[:,None])[data1.y1notnan,:].mean(axis=0)
-        deltaAPEsig2=param1[-1,BETA2COL]*\
-                     (data1.x*sig2[:,None])[data1.y2notnan,:].mean(axis=0)
-        deltaAPEsig1[-1]=sig1[data1.y1notnan].mean()+deltaAPEsig1[-1]
-        deltaAPEsig2[-1]=sig2[data1.y2notnan].mean()+deltaAPEsig2[-1]
-        # calculate the standard error of the APEs using the Delta method
-        snpAPEsig1SE=(deltaAPEsig1@b1Var@deltaAPEsig1)**0.5
-        snpAPEsig2SE=(deltaAPEsig2@b2Var@deltaAPEsig2)**0.5
-        # get covariance matrix for estimates of gamma
-        gcVar=(param1Var.reshape((data1.k,TOTALCOLS,\
-                                  data1.k,TOTALCOLS)))[:,GAMMACOL,:,GAMMACOL]
-        # get individual-specific delta (i.e. precursor of rho)
-        delta=np.exp((data1.x*param1[None,:,GAMMACOL]).sum(axis=1))
-        # calculate individual-specific effect of SNP on rho and average to APE
-        snpAPErho=param1[-1,GAMMACOL]*\
-                  (2*delta/((delta+1)**2))[data1.ybothnotnan].mean()
-        # calculate derivative of those APEs with respect to the SNPs
-        deltaAPErho=2*param1[-1,GAMMACOL]*(data1.x*(((1-delta)\
-                /((1+delta)**3))[:,None]))[data1.ybothnotnan,:].mean(axis=0)
-        deltaAPErho[-1]=(2*delta\
-                /((delta+1)**2))[data1.ybothnotnan].mean()+deltaAPErho[-1]
-        # calculate the standard error of the APEs using the Delta method
-        snpAPErhoSE=(deltaAPErho@gcVar@deltaAPErho)**0.5
-        # get SNP effect, standard error, inferences
-        snp=param1[-1,:]
-        snpSE=param1SE[-1,:]
-        snpWald=(snp/snpSE)**2
-        snpPWald=1-stats.chi2.cdf(snpWald,1)
-        # get estimated covariance matrix of all SNP-specific effects
-        snpVar=(param1Var.reshape((data1.k,TOTALCOLS,\
-                                   data1.k,TOTALCOLS)))[-1,:,-1,:]
-        jointWald=(snp[None,:]*np.linalg.inv(snpVar)*snp[:,None]).sum()
-        jointPWald=1-stats.chi2.cdf(jointWald,TOTALCOLS)
-        # add results for effect on E[Y1] to line
-        outputline+=sep+str(snp[ALPHA1COL])+sep+str(snpSE[ALPHA1COL])+sep+\
-            str(snpWald[ALPHA1COL])+sep+str(snpPWald[ALPHA1COL])
-        # add results for effect on E[Y2] to line
-        outputline+=sep+str(snp[ALPHA2COL])+sep+str(snpSE[ALPHA2COL])+sep+\
-            str(snpWald[ALPHA2COL])+sep+str(snpPWald[ALPHA2COL])
-        # add results for effect on Stdev(Y1) to line
-        outputline+=sep+str(snp[BETA1COL])+sep+str(snpSE[BETA1COL])+sep+\
-            str(snpWald[BETA1COL])+sep+str(snpPWald[BETA1COL])\
-                    +sep+str(snpAPEsig1)+sep+str(snpAPEsig1SE)
-        # add results for effect on Stdev(Y2) to line
-        outputline+=sep+str(snp[BETA2COL])+sep+str(snpSE[BETA2COL])+sep+\
-            str(snpWald[BETA2COL])+sep+str(snpPWald[BETA2COL])\
-                    +sep+str(snpAPEsig2)+sep+str(snpAPEsig2SE)
-        # add results for effect on Stdev(Y2) to line
-        outputline+=sep+str(snp[GAMMACOL])+sep+str(snpSE[GAMMACOL])+sep+\
-            str(snpWald[GAMMACOL])+sep+str(snpPWald[GAMMACOL])\
-                    +sep+str(snpAPErho)+sep+str(snpAPErhoSE)
-        # add results for Wald test on joint significance to line
-        outputline+=sep+str(jointWald)+sep+str(jointPWald)
-        # if we do LRT
+    def CalculateStats(self,j,gisnan,ngeno,eaf,hweP,param1,logL1,\
+                    G1,D1,P1,converged1,i1,data1):
+        # read line from bim file, strip trailing newline, split by tabs
+        snpline=linecache.getline(args.bfile+extBIM,j+1).rstrip(eol).split(sep)
+        # get chromosome number, snp ID, baseline allele, and effect allele
+        snpchr=snpline[0]
+        snpid=snpline[1]
+        snpbaseallele=snpline[4]
+        snpeffallele=snpline[5]
+        # build up line to write
+        outputline=snpchr+sep+snpid+sep+snpbaseallele+sep+str(1-eaf)+sep\
+                +snpeffallele+sep+str(eaf)+sep+str(hweP)+sep+str(ngeno)+sep\
+                +str(data1.n1)+sep+str(data1.n2)+sep+str(data1.nboth)+sep\
+                +str(i1)
+        # define sequence of NaNs for missing stuff, if any
+        nanfield=sep+'nan'
+        # when doing LRT per SNP: 30 SNP-specific fields that can be missing
         if args.lrt:
-            # calculate statistic
-            snpLRT=2*data1.n*(logL1-logL0)
-            snpPLRT=1-stats.chi2.cdf(snpLRT,TOTALCOLS)
-            # add LRT results to line
-            outputline+=sep+str(snpLRT)+sep+str(snpPLRT)
-    else:
-        # if model not converged: set NaNs as SNP results
-        outputline+=nanfields
-    # add eol to line
-    outputline+=eol
-    # return output line
-    return outputline
+            nanfields=30*nanfield
+        else: # else: 28 SNP-specific fields
+            nanfields=28*nanfield
+        # if converged and Hessian pd, calculate stats and write to assoc file
+        if converged1 and min(D1)>MINEVAL:
+            # get OPG
+            GGT1=(G1.reshape((data1.k*TOTALCOLS,G1.shape[2])))@\
+                ((G1.reshape((data1.k*TOTALCOLS,G1.shape[2]))).T)
+            # get inverse of -Hessian and variance matrix
+            invMH1=(P1/D1[None,:])@P1.T
+            param1Var=invMH1@GGT1@invMH1
+            # get standard errors of parameter estimates
+            param1SE=((np.diag(param1Var))**0.5).reshape((data1.k,TOTALCOLS))
+            # get covariance matrix for estimates of beta1 and beta2
+            b1Var=(param1Var.reshape((data1.k,TOTALCOLS,\
+                                    data1.k,TOTALCOLS)))[:,BETA1COL,:,BETA1COL]
+            b2Var=(param1Var.reshape((data1.k,TOTALCOLS,\
+                                    data1.k,TOTALCOLS)))[:,BETA2COL,:,BETA2COL]
+            # get individual-specific standard deviations for Y1 and Y2
+            sig1=np.exp((data1.x*param1[None,:,BETA1COL]).sum(axis=1))
+            sig2=np.exp((data1.x*param1[None,:,BETA2COL]).sum(axis=1))
+            # caclulate the APE of regressors on standard deviations
+            snpAPEsig1=param1[-1,BETA1COL]*sig1[data1.y1notnan].mean()
+            snpAPEsig2=param1[-1,BETA2COL]*sig2[data1.y2notnan].mean()
+            # calculate derivative of those APEs with respect to the SNPs
+            deltaAPEsig1=param1[-1,BETA1COL]*\
+                        (data1.x*sig1[:,None])[data1.y1notnan,:].mean(axis=0)
+            deltaAPEsig2=param1[-1,BETA2COL]*\
+                        (data1.x*sig2[:,None])[data1.y2notnan,:].mean(axis=0)
+            deltaAPEsig1[-1]=sig1[data1.y1notnan].mean()+deltaAPEsig1[-1]
+            deltaAPEsig2[-1]=sig2[data1.y2notnan].mean()+deltaAPEsig2[-1]
+            # calculate the standard error of the APEs using the Delta method
+            snpAPEsig1SE=(deltaAPEsig1@b1Var@deltaAPEsig1)**0.5
+            snpAPEsig2SE=(deltaAPEsig2@b2Var@deltaAPEsig2)**0.5
+            # get covariance matrix for estimates of gamma
+            gcVar=(param1Var.reshape((data1.k,TOTALCOLS,\
+                                    data1.k,TOTALCOLS)))[:,GAMMACOL,:,GAMMACOL]
+            # get individual-specific delta (i.e. precursor of rho)
+            delta=np.exp((data1.x*param1[None,:,GAMMACOL]).sum(axis=1))
+            # calculate APE of SNP on rho
+            snpAPErho=param1[-1,GAMMACOL]*\
+                    (2*delta/((delta+1)**2))[data1.ybothnotnan].mean()
+            # calculate derivative of those APEs with respect to the SNPs
+            deltaAPErho=2*param1[-1,GAMMACOL]*(data1.x*(((1-delta)\
+                   /((1+delta)**3))[:,None]))[data1.ybothnotnan,:].mean(axis=0)
+            deltaAPErho[-1]=(2*delta\
+                    /((delta+1)**2))[data1.ybothnotnan].mean()+deltaAPErho[-1]
+            # calculate the standard error of the APEs using the Delta method
+            snpAPErhoSE=(deltaAPErho@gcVar@deltaAPErho)**0.5
+            # get SNP effect, standard error, inferences
+            snp=param1[-1,:]
+            snpSE=param1SE[-1,:]
+            snpWald=(snp/snpSE)**2
+            snpPWald=1-stats.chi2.cdf(snpWald,1)
+            # get estimated covariance matrix of all SNP-specific effects
+            snpVar=(param1Var.reshape((data1.k,TOTALCOLS,\
+                                    data1.k,TOTALCOLS)))[-1,:,-1,:]
+            jointWald=(snp[None,:]*np.linalg.inv(snpVar)*snp[:,None]).sum()
+            jointPWald=1-stats.chi2.cdf(jointWald,TOTALCOLS)
+            # add results for effect on E[Y1] to line
+            outputline+=sep+str(snp[ALPHA1COL])+sep+str(snpSE[ALPHA1COL])+sep+\
+                str(snpWald[ALPHA1COL])+sep+str(snpPWald[ALPHA1COL])
+            # add results for effect on E[Y2] to line
+            outputline+=sep+str(snp[ALPHA2COL])+sep+str(snpSE[ALPHA2COL])+sep+\
+                str(snpWald[ALPHA2COL])+sep+str(snpPWald[ALPHA2COL])
+            # add results for effect on Stdev(Y1) to line
+            outputline+=sep+str(snp[BETA1COL])+sep+str(snpSE[BETA1COL])+sep+\
+                str(snpWald[BETA1COL])+sep+str(snpPWald[BETA1COL])\
+                        +sep+str(snpAPEsig1)+sep+str(snpAPEsig1SE)
+            # add results for effect on Stdev(Y2) to line
+            outputline+=sep+str(snp[BETA2COL])+sep+str(snpSE[BETA2COL])+sep+\
+                str(snpWald[BETA2COL])+sep+str(snpPWald[BETA2COL])\
+                        +sep+str(snpAPEsig2)+sep+str(snpAPEsig2SE)
+            # add results for effect on Stdev(Y2) to line
+            outputline+=sep+str(snp[GAMMACOL])+sep+str(snpSE[GAMMACOL])+sep+\
+                str(snpWald[GAMMACOL])+sep+str(snpPWald[GAMMACOL])\
+                        +sep+str(snpAPErho)+sep+str(snpAPErhoSE)
+            # add results for Wald test on joint significance to line
+            outputline+=sep+str(jointWald)+sep+str(jointPWald)
+            # if we do LRT
+            if args.lrt:
+                # if any difference in observations considered in baseline vs.
+                # SNP-specific model (due to SNP missingness)
+                if self.data.N!=data1.N:
+                    # get copy full data for individuals with nonmissing SNP
+                    data1=self.data.copysubset(~gisnan)
+                    # use Newton or BFGS to get null model estimates for
+                    # subset of observations in SNP-specific model
+                    if args.bfgs:
+                        (logL0,converged0)=BFGS(data1,reestimation=True)
+                    else:
+                        (logL0,converged0)=Newton(data1,baseline=False,\
+                                                silent=True,reestimation=True)
+                    # only keep logL0 if converged, otherwise set to NaN
+                    if not(converged0):
+                        logL0=np.nan
+                else: # else: get logL0 from estimates baseline model
+                    logL0=self.data.logL
+                # calculate statistic
+                snpLRT=2*data1.n*(logL1-logL0)
+                snpPLRT=1-stats.chi2.cdf(snpLRT,TOTALCOLS)
+                # add LRT results to line
+                outputline+=sep+str(snpLRT)+sep+str(snpPLRT)
+        else:
+            # if model not converged: set NaNs as SNP results
+            outputline+=nanfields
+        # add eol to line
+        outputline+=eol
+        # return output line
+        return outputline
 
 def Newton(data,baseline=True,silent=False,\
             onestepfinal=False,reestimation=False):
