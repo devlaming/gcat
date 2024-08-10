@@ -188,9 +188,12 @@ class Data:
             # find missingness, recode, and get counts
             self.FindAndRecodeMissingness()
             self.GetCounts()
-            # initialise parameters and clean
+            # initialise parameters
             self.InitialiseParams()
-            self.Clean()
+            # keep only observations for which we have either y1, y2, or both
+            self.Subsample(self.y1ory2notnan,initialisation=True)
+            # set indices of this main data object
+            self.mainind=np.arange(self.nrow)
     
     def InitialiseParams(self):
         # report update stats
@@ -242,10 +245,6 @@ class Data:
         self.param[:,BETA1COL]=beta1
         self.param[:,BETA2COL]=beta2
         self.param[:,GAMMACOL]=gamma
-        # initialise individual-specific weights baseline model at zero
-        self.wL=np.zeros(self.nrow)
-        self.wG=np.zeros((self.nrow,TOTALCOLS))
-        self.wH=np.zeros((self.nrow,TOTALCOLS,TOTALCOLS))
         # initialise log-likelihood baseline model at -infinity
         self.logL=-np.inf
     
@@ -277,31 +276,27 @@ class Data:
         self.k=self.x.shape[1]
     
     def copysubset(self,keep=None):
-        # if keep is not defined, keep all observations when copying
-        if keep is None:
-            keep=np.ones(self.nrow,dtype=np.bool_)
+        # if keep is not defined: keep all observations when copying
+        if keep is None: keep=np.ones(self.nrow,dtype=np.bool_)
         # make copy of main data, in form of Data instance
         data=Data(self.x[keep,:].copy(),self.xlabels.copy(),\
                   self.y1[keep].copy(),self.y1label,
                   self.y2[keep].copy(),self.y2label,copy=True)
-        # also copy booleans and indices of remaining PLINK data
+        # also copy booleans and indices of remaining PLINK data and main data
         data.y1notnan=self.y1notnan[keep].copy()
         data.y2notnan=self.y2notnan[keep].copy()
         data.ybothnotnan=self.ybothnotnan[keep].copy()
         data.y1ory2notnan=self.y1ory2notnan[keep].copy()
         data.ind=self.ind[keep].copy()
-        # also copy parameter estimates, individual-specific weights, logL
+        data.mainind=self.mainind[keep].copy()
+        # also copy parameter estimates
         data.param=self.param.copy()
-        data.wL=self.wL[keep].copy()
-        data.wG=self.wG[keep,:].copy()
-        data.wH=self.wH[keep,:,:].copy()
-        data.logL=self.logL
         # update counts
         data.GetCounts()
         # return new Data instance
         return data
     
-    def Subsample(self,keep):
+    def Subsample(self,keep,initialisation=False):
         # keep x, y1, y2 for subset of observations
         self.x=self.x[keep,:]
         self.y1=self.y1[keep]
@@ -311,12 +306,10 @@ class Data:
         self.y2notnan=self.y2notnan[keep]
         self.ybothnotnan=self.ybothnotnan[keep]
         self.y1ory2notnan=self.y1ory2notnan[keep]
-        # idem for individual-specific weights
-        self.wL=self.wL[keep]
-        self.wG=self.wG[keep,:]
-        self.wH=self.wH[keep,:,:]
-        # store only the PLINK entries this corresponds to
+        # store PLINK entries this corresponds to
         self.ind=self.ind[keep]
+        # if not initialisation: store entries main data this corresponds to
+        if not(initialisation): self.mainind=self.mainind[keep]
         # update counts
         self.GetCounts()
 
@@ -332,8 +325,14 @@ class Data:
         self.Subsample(~gisnan)
     
     def Clean(self):
-        # keep only observations for which we have either y1, y2, or both
-        self.Subsample(self.y1ory2notnan)
+        # remove data that is not needed for reporting association results
+        self.wL=None
+        self.wG=None
+        self.wH=None
+        self.ind=None
+        self.mainind=None
+        self.y1=None
+        self.y2=None 
 
 class Analyser:
     '''
@@ -394,7 +393,7 @@ class Analyser:
         self.snpreader=snpreader
         # estimate baseline model
         logger.info('Estimating baseline model')
-        converged0=Newton(self.data)
+        converged0=self.Newton(self.data)
         # if baseline model did not converge: throw error
         if not(converged0):
             raise RuntimeError('Estimates baseline model not converged')
@@ -535,16 +534,17 @@ class Analyser:
                 # if 1-step efficient estimation, only catch whether converged
                 # and number of iterations
                 if onestep:
-                    (converged1,i1)=BFGS(data1)
+                    (converged1,i1)=self.BFGS(data1)
                 else: # else, catch all relevant output
-                    (logL1,GGT1,D1,P1,converged1,i1)=BFGS(data1)
+                    (logL1,GGT1,D1,P1,converged1,i1)=self.BFGS(data1)
             else:
                 # if 1-step efficient estimation, only catch whether converged
                 # and number of iterations
                 if onestep:
-                    (converged1,i1)=Newton(data1,baseline=False,silent=True)
+                    (converged1,i1)=self.Newton(data1,baseline=False,\
+                                                silent=True)
                 else: # else, catch all relevant output
-                    (logL1,GGT1,D1,P1,converged1,i1)=Newton(data1,\
+                    (logL1,GGT1,D1,P1,converged1,i1)=self.Newton(data1,\
                                                     baseline=False,silent=True)
             # if 1-step efficient estimation
             if onestep:
@@ -557,10 +557,12 @@ class Analyser:
                 # replace baseline estimates by estimates small data with snp
                 data1.param=param1
                 # take one Newton step
-                (logL1,GGT1,D1,P1,_,_)=Newton(data1,baseline=False,\
+                (logL1,GGT1,D1,P1,_,_)=self.Newton(data1,baseline=False,\
                                                  silent=True,onestepfinal=True)
             # retrieve final parameter estimates from full data
             param1=data1.param
+            # remove extraneous stuff from data
+            data1.Clean()
         else: # else don't even try: just return nan/none values
             (param1,logL1,GGT1,D1,P1,converged1,i1)=\
                 (None,None,None,[0],None,False,None)
@@ -676,9 +678,9 @@ class Analyser:
                     # use Newton or BFGS to get null model estimates for
                     # subset of observations in SNP-specific model
                     if args.bfgs:
-                        (logL0,converged0)=BFGS(data1,reestimation=True)
+                        (logL0,converged0)=self.BFGS(data1,reestimation=True)
                     else:
-                        (logL0,converged0)=Newton(data1,baseline=False,\
+                        (logL0,converged0)=self.Newton(data1,baseline=False,\
                                                 silent=True,reestimation=True)
                     # only keep logL0 if converged, otherwise set to NaN
                     if not(converged0):
@@ -698,410 +700,402 @@ class Analyser:
         # return output line
         return outputline
 
-def Newton(data,baseline=True,silent=False,\
-            onestepfinal=False,reestimation=False):
-    # set iteration counter to 0 and convergence to false
-    i=0
-    converged=False
-    # if baseline model
-    if baseline:
-        # fully calculate log-likelihood, gradient, Hessian
-        (logL,grad,H)=CalcLogL(data)
-    elif onestepfinal: # if final step (i.e. full data) of 1-step estimation
-        # fully calculate log-likelihood, gradient, Hessian, wG
-        (logL,grad,H,wG)=CalcLogL(data,alsogradweights=True)
-        # store individual-specific weights for gradient
-        data.wG=wG
-    else: # all other cases
-        # calculate logL, grad, Hessian using weights baseline model
-        (logL,grad,H)=CalcLogL(data,useexistingweights=True)
-    # while not converged and MAXITER not reached
-    while not(converged) and i<MAXITER:
-        # if logL is -infinity: quit; on a dead track for this model
-        if np.isinf(logL):
-            if baseline:
-                data.wL=None
-                data.wG=None
-                data.wH=None
-                data.logL=logL
-                return converged
-            if reestimation: return logL,converged
-            if onestep and not(onestepfinal): return converged,i
-            return logL,None,[0],None,converged,i
-        # get (bended) EVD of -Hessian
-        (Dadj,P,D)=BendEVDSymPSD(-H)
-        # get Newton-Raphson update
-        update=(P@((((grad.reshape((data.k*TOTALCOLS,1))).T@P)/Dadj).T))\
-            .reshape((data.k,TOTALCOLS))
-        # calculate convergence criterion
-        msg=(update*grad).mean()
-        # if convergence criterion met or last step 1-step estimation is done
-        if msg<TOL or (onestepfinal and i>0):
-            converged=True
-        else: # otherwise
-            # do line search if baseline model or linesearch is activated
-            if baseline or linesearch:
-                (j,step)=GoldenSection(data,logL,grad,update)
-            else: data.param+=update # else just full Newton update
-            # update iteration counter
-            i+=1
-            # provide info if not silent
-            if not(silent):
-                report='Newton iteration '+str(i)+': logL='+str(logL)
+    def Newton(self,data,baseline=True,silent=False,\
+                onestepfinal=False,reestimation=False):
+        # set iteration counter to 0 and convergence to false
+        i=0
+        converged=False
+        # if baseline model
+        if baseline:
+            # fully calculate log-likelihood, gradient, Hessian
+            (logL,grad,H)=self.CalcLogL(data)
+        elif onestepfinal: # if final step (i.e. full data) of 1-step estimation
+            # fully calculate log-likelihood, gradient, Hessian, wG
+            (logL,grad,H,wG)=self.CalcLogL(data,alsogradweights=True)
+        else: # all other cases
+            # calculate logL, grad, Hessian using weights baseline model
+            (logL,grad,H)=self.CalcLogL(data,useexistingweights=True)
+        # while not converged and MAXITER not reached
+        while not(converged) and i<MAXITER:
+            # if logL is -infinity: quit; on a dead track for this model
+            if np.isinf(logL):
+                if baseline:
+                    data.wL=None
+                    data.wG=None
+                    data.wH=None
+                    data.logL=logL
+                    return converged
+                if reestimation: return logL,converged
+                if onestep and not(onestepfinal): return converged,i
+                return logL,None,[0],None,converged,i
+            # get (bended) EVD of -Hessian
+            (Dadj,P,D)=BendEVDSymPSD(-H)
+            # get Newton-Raphson update
+            update=(P@((((grad.reshape((data.k*TOTALCOLS,1))).T@P)/Dadj).T))\
+                .reshape((data.k,TOTALCOLS))
+            # calculate convergence criterion
+            msg=(update*grad).mean()
+            # if convergence criterion met or last step 1-step estimation done
+            if msg<TOL or (onestepfinal and i>0):
+                converged=True
+            else: # otherwise
+                # do line search if baseline model or linesearch is activated
                 if baseline or linesearch:
-                    report+='; '+str(j)+' line-search steps,'+\
-                            ' yielding step size = '+str(step)
-                logger.info(report)
-            # if baseline model or, 1-step estimation but not final step
-            if baseline or (onestep and not(onestepfinal)):
-                # calculate new log-likelihood, gradient, Hessian
-                (logL,grad,H)=CalcLogL(data)
-            else:
-                # calculate new log-likelihood, gradient, Hessian, wG
-                (logL,grad,H,wG)=CalcLogL(data,alsogradweights=True)
-                # store individual-specific weights for gradient
-                data.wG=wG
-    # if baseline model
-    if baseline:
-        # get individual-specific weights (for iter 1 SNP-specific model)
-        (wL,wG,wH)=CalcLogL(data,weightsonly=True)
-        # store individual-specific weights and overall log-likelihood
-        data.wL=wL
-        data.wG=wG
-        data.wH=wH
-        data.logL=logL
-        # and return whether converged
-        return converged
-    # if re-estimation for LRT (for subsample with nonmissing genotype)
-    if reestimation:
-        # return logL and whether converged
-        return logL,converged
-    # if 1-step estimation but not final step
-    if onestep and not(onestepfinal):
-        # return number of iterations and whether converged
-        return converged,i
-    # calculate OPG (for robust SEs)
-    GGT=CalcLogL(data,Gonly=True,useexistingweights=True)
-    # return logL, OPG, EVD -H, converged, iterations
-    return logL,GGT,D,P,converged,i
-
-def BFGS(data,reestimation=False):
-    # set iteration counter to 0 and convergence to false
-    i=0
-    converged=False
-    # calculate logL, grad, Hessian using weights baseline model
-    (logL,grad,H)=CalcLogL(data,useexistingweights=True)
-    # get (bended) EVD of -Hessian
-    (Dadj,P,D)=BendEVDSymPSD(-H)
-    # initialise approximated inverse Hessian
-    AIH=-(P*(1/Dadj[None,:]))@P.T
-    # while not converged and MAXITER not reached
-    while not(converged) and i<MAXITER:
-        # if logL is -infinity: quit; on a dead track for this model
-        if np.isinf(logL):
-            if reestimation: return logL,converged
-            if onestep: return converged,i
-            return logL,None,[0],None,converged,i
-        # get BFGS update
-        update=(-AIH@grad.reshape((data.k*TOTALCOLS,1)))\
-            .reshape((data.k,TOTALCOLS))
-        # calculate convergence criterion
-        msg=(update*grad).mean()
-        # if converged: convergenced=True
-        if msg<TOL:
-            converged=True
-        else: # if not converged yet: get new parameters, logL, grad
-            # either via line search
-            if linesearch:
-                (j,step,paramnew,logLnew,gradnew)=\
-                    GoldenSection(data,logL,grad,update,bfgs=True)
-            else: # or full update
-                paramnew=data.param+update
-                (logLnew,gradnew)=\
-                    CalcLogL(data,param=paramnew,logLgradonly=True)
-            # complete update if new log-likelihood is not -infinity
-            if not(np.isinf(logLnew)):
-                # calculate quantities needed for BFGS
-                s=(paramnew-data.param).reshape((data.k*TOTALCOLS,1))
-                y=(gradnew-grad).reshape((data.k*TOTALCOLS,1))
-                sty=(s*y).sum()
-                r=1/sty
-                v=s*r
-                w=AIH@y
-                # store new parameters, grad, logL
-                data.param=paramnew
-                grad=gradnew
-                logL=logLnew
-                # update approximated inverse Hessian and stabilise
-                AIH=AIH-np.outer(v,w)-np.outer(w,v)+\
-                    np.outer(v,v)*((w*y).sum())+np.outer(v,s)
-                AIH=(AIH+(AIH.T))/2
+                    (j,step)=self.GoldenSection(data,logL,grad,update)
+                else: data.param+=update # else just full Newton update
                 # update iteration counter
                 i+=1
-            else:
-                # otherwise only set logL to -np.inf, causing BFGS to stop
-                # because of condition at start of while loop
-                logL=-np.inf
-    # if re-estimation for LRT (for subsample with nonmissing genotype)
-    if reestimation:
-        # return logL and whether converged
-        return logL,converged
-    # if 1-step efficient estimation (full convergence in small sample;
-    # doing inference based on final Newton step in full sample)
-    if onestep:
-        # return number of iterations and whether converged
-        return converged,i
-    # calculate logL, OPG, H at BFGS solution
-    (logL,GGT,H)=CalcLogL(data,Ginsteadofgrad=True)
-    # get (bended) EVD of unpacked -Hessian
-    (_,P,D)=BendEVDSymPSD(-H)
-    # return logL, OPG, EVD -H, converged, iterations
-    return logL,GGT,D,P,converged,i
-
-def GoldenSection(data,logL,grad,update,bfgs=False):
-    # calculate update'grad
-    utg=(grad*update).sum()
-    # initialise parameters at various points along interval
-    param1=data.param
-    param2=data.param+ONEMINTHETAINV*update
-    param3=data.param+THETAINV*update
-    param4=data.param+update
-    # set corresponding step sizes
-    step1=0
-    step2=ONEMINTHETAINV
-    step3=THETAINV
-    step4=1
-    # set iteration counter to one and converged to false
-    j=1
-    converged=False
-    # calculate log likelihood at right
-    logL4=CalcLogL(data,param=param4,logLonly=True)
-    # directly try Armijo's rule before performing actual section search
-    if logL4>=logL+ARMIJO*step4*utg:
-        converged=True
-    else: # if not directly meeting criterion
-        # calculate log likelihoods mid-left and mid-right
-        logL2=CalcLogL(data,param=param2,logLonly=True)
-        logL3=CalcLogL(data,param=param3,logLonly=True)
-    # while not converged and MAXITER not reached
-    while not(converged) and j<MAXITER:
-        # update iteration counter
-        j+=1
-        #if mid-left val >= mid-right val: set mid-right as right
-        if logL2>=logL3: 
-            # set parameters accordingly
-            param4=param3
-            param3=param2
-            param2=THETAINV*param1+ONEMINTHETAINV*param4
-            # set step sizes accordingly
-            step4=step3
-            step3=step2
-            step2=THETAINV*step1+ONEMINTHETAINV*step4
-            # calculate log likelihood at new mid-left and mid-right
-            logL4=logL3
-            logL3=logL2
-            logL2=CalcLogL(data,param=param2,logLonly=True)
-            # test if Armijo's rule satisfied
-            if logL4>=logL+ARMIJO*step4*utg:
-                converged=True
-        #if mid-right val > mid-left val: set mid-left as left
-        else:
-            # set parameters accordingly
-            param1=param2
-            param2=param3
-            param3=THETAINV*param4+ONEMINTHETAINV*param1
-            # set step sizes accordingly
-            step1=step2
-            step2=step3
-            step3=THETAINV*step4+ONEMINTHETAINV*step1
-            # calculate log likelihood at new mid-left and mid-right
-            logL2=logL3
-            logL3=CalcLogL(data,param=param3,logLonly=True)
-    # if we're doing BFGS
-    if bfgs:
-        # calculate gradient, and return relevant output for new estimates
-        grad4=CalcLogL(data,param=param4,gradonly=True)
-        return j,step4,param4,logL4,grad4
-    # otherwise: update params, and just return no. of steps and step size
-    data.param=param4
-    return j,step4
-
-def CalcLogL(data,param=None,useexistingweights=False,\
-                weightsonly=False,logLonly=False,logLgradonly=False,\
-                Gonly=False,gradonly=False,alsogradweights=False,\
-                Ginsteadofgrad=False):
-    # if only contribution per individual to gradient wanted
-    # and we can use weights from previous calculation
-    if useexistingweights and Gonly:
-        # calculate and return OPG
-        GGT=CalculateOPG(data.x,data.wG,data.n)
-        return GGT
-    # if we can use weights from previous calculation to get logL,grad,H
-    if useexistingweights:
-        # calculate log-likelihood/n and gradient/n using those weights
-        logL=(data.wL.sum())/data.n
-        grad=(data.x.T@data.wG)/data.n
-        # calculate Hessian/n using those weights
-        H=CalculateHessian(data.x,data.wH,data.n)
-        # return those components
-        return logL,grad,H
-    # if parameters not provided, use what's in data
-    if param is None:
-        param=data.param
-    # calculate linear parts
-    linpart=(data.x[:,:,None]*param[None,:,:]).sum(axis=1)
-    # set appropriate parts to zero for observations with missingness
-    linpart[~data.y1notnan,ALPHA1COL]=0
-    linpart[~data.y2notnan,ALPHA2COL]=0
-    linpart[~data.y1notnan,BETA1COL]=0
-    linpart[~data.y2notnan,BETA2COL]=0
-    linpart[~data.ybothnotnan,GAMMACOL]=0
-    # get sigma1, sigma2, delta, and rho
-    sig1=np.exp(linpart[:,BETA1COL])
-    sig2=np.exp(linpart[:,BETA2COL])
-    delta=np.exp(linpart[:,GAMMACOL])
-    rho=(delta-1)/(delta+1)
-    # set halting variable to false
-    halt=False
-    # if at least one st.dev is zero: halt=True
-    if (((sig1==0).sum())+((sig2==0).sum()))>0:
-        halt=True
-    # if at least one delta is 0 or np.inf: halt=True
-    if (((delta==0).sum())+(np.isinf(delta).sum()))>0:
-        halt=True
-    # if at least one rsq is 1: halt=True
-    if ((rho**2==1).sum())>0:
-        halt=True
-    # if halt=True: set -np.inf as log-likelihood, and stop
-    if halt:
-        logL=-np.inf
-        if logLonly: return logL
-        if logLgradonly: return logL,None
-        if gradonly or Gonly: return None
-        if weightsonly: return None,None,None
-        return logL,None,None
-    # set sig1 and sig2 to np.inf for missing observations
-    sig1[~data.y1notnan]=np.inf
-    sig2[~data.y2notnan]=np.inf
-    # calculate errors
-    e1=data.y1-linpart[:,ALPHA1COL]
-    e2=data.y2-linpart[:,ALPHA2COL]
-    # calculate rescaled errors (i.e. error/stdev)
-    r1=(e1/sig1)
-    r2=(e2/sig2)
-    # calculate some other key ingredients for logL/grad/H
-    rhosq=rho**2
-    unexp=1-rhosq
-    invunexp=1/unexp
-    r1sq=r1**2
-    r2sq=r2**2
-    r1r2=r1*r2
-    r1sqplusr2sq=r1sq+r2sq
-    rhor1r2=rho*r1r2
-    # calculate log-likelihood only if necessary
-    if logLonly or logLgradonly or \
-        (not(gradonly) and not(Gonly) and not(weightsonly)):
-        # calculate constant
-        cons=data.N*np.log(2*np.pi)
-        # calculate log|V| and quadratic term
-        logdetV=2*data.nboth*np.log(2)+linpart[:,GAMMACOL].sum()\
-            +2*(linpart[:,BETA1COL].sum()+linpart[:,BETA2COL].sum())\
-                -2*((np.log(delta[data.ybothnotnan]+1)).sum())
-        quadratic=((r1sqplusr2sq-2*rhor1r2)*invunexp).sum()
-        # calculate and return logL/n
-        logL=-0.5*(cons+logdetV+quadratic)/data.n
-    # if only logL desired, return that
-    if logLonly:
-        return logL
-    # initialise weights matrix for gradient
-    wG=np.empty((data.nrow,TOTALCOLS))
-    # calculate key ingredients for grad/H
-    rhor1=rho*r1
-    rhor2=rho*r2
-    invsig1unexp=invunexp/sig1
-    invsig2unexp=invunexp/sig2
-    deltasqm1div4delta=((delta**2)-1)/(4*delta)
-    deltasqp1div2delta=((delta**2)+1)/(2*delta)
-    # calculate weights matrix for gradient
-    wG[:,ALPHA1COL]=(r1-rhor2)*invsig1unexp
-    wG[:,ALPHA2COL]=(r2-rhor1)*invsig2unexp
-    wG[:,BETA1COL]=((r1sq-rhor1r2)/unexp)-1
-    wG[:,BETA2COL]=((r2sq-rhor1r2)/unexp)-1
-    wG[:,GAMMACOL]=(rho-deltasqm1div4delta*r1sqplusr2sq+\
-                    deltasqp1div2delta*r1r2)/2
-    # set gradient=0 w.r.t. beta1 for missing y1
-    # and idem w.r.t. beta2 for missing y2
-    wG[~data.y1notnan,BETA1COL]=0
-    wG[~data.y2notnan,BETA2COL]=0
-    # calculate gradient only if necessary
-    if logLgradonly or gradonly or not(Gonly or Ginsteadofgrad or weightsonly):
-        grad=(data.x.T@wG)/data.n
-    # if only logL and grad desired, return that
-    if logLgradonly:
-        return logL,grad
-    # if only gradient desired, return that
-    if gradonly:
-        return grad
-    # calculate G (individual-specific contributions grad/n) only if necessary
-    if Gonly or Ginsteadofgrad:
-        # calculate OPG
+                # provide info if not silent
+                if not(silent):
+                    report='Newton iteration '+str(i)+': logL='+str(logL)
+                    if baseline or linesearch:
+                        report+='; '+str(j)+' line-search steps,'+\
+                                ' yielding step size = '+str(step)
+                    logger.info(report)
+                # if baseline model or, 1-step estimation but not final step
+                if baseline or (onestep and not(onestepfinal)):
+                    # calculate new log-likelihood, gradient, Hessian
+                    (logL,grad,H)=self.CalcLogL(data)
+                else:
+                    # calculate new log-likelihood, gradient, Hessian, wG
+                    (logL,grad,H,wG)=self.CalcLogL(data,alsogradweights=True)
+        # if baseline model
+        if baseline:
+            # get individual-specific weights (for iter 1 SNP-specific model)
+            (wL,wG,wH)=self.CalcLogL(data,weightsonly=True)
+            # store individual-specific weights and overall log-likelihood
+            data.wL=wL
+            data.wG=wG
+            data.wH=wH
+            data.logL=logL
+            # and return whether converged
+            return converged
+        # if re-estimation for LRT (for subsample with nonmissing genotype)
+        if reestimation:
+            # return logL and whether converged
+            return logL,converged
+        # if 1-step estimation but not final step
+        if onestep and not(onestepfinal):
+            # return number of iterations and whether converged
+            return converged,i
+        # calculate OPG (for robust SEs)
         GGT=CalculateOPG(data.x,wG,data.n)
-    # if only OPG wanted, return that
-    if Gonly:
-        return GGT
-    # calculate key ingredients for Hessian
-    rhodivunexp=rho*invunexp
-    rhosqplus1=1+rhosq
-    # initialise weights array Hessian (Nplink-by-TOTALCOLS-by-TOTALCOLS)
-    wH=np.empty((data.nrow,TOTALCOLS,TOTALCOLS))
-    # calculate weights array for Hessian
-    wH[:,ALPHA1COL,ALPHA1COL]=-invsig1unexp/sig1
-    wH[:,ALPHA2COL,ALPHA2COL]=-invsig2unexp/sig2
-    wH[:,ALPHA1COL,ALPHA2COL]=rho*invsig1unexp/sig2
-    wH[:,ALPHA1COL,BETA1COL]=invsig1unexp*(rhor2-2*r1)
-    wH[:,ALPHA2COL,BETA2COL]=invsig2unexp*(rhor1-2*r2)
-    wH[:,ALPHA1COL,BETA2COL]=invsig1unexp*(rhor2)
-    wH[:,ALPHA2COL,BETA1COL]=invsig2unexp*(rhor1)
-    wH[:,ALPHA1COL,GAMMACOL]=invsig1unexp*(rhor1-(rhosqplus1*(r2/2)))
-    wH[:,ALPHA2COL,GAMMACOL]=invsig2unexp*(rhor2-(rhosqplus1*(r1/2)))
-    wH[:,BETA1COL,BETA1COL]=invunexp*(rhor1r2-2*r1sq)
-    wH[:,BETA2COL,BETA2COL]=invunexp*(rhor1r2-2*r2sq)
-    wH[:,BETA1COL,BETA2COL]=invunexp*rhor1r2
-    wH[:,BETA1COL,GAMMACOL]=rhodivunexp*r1sq-(r1r2/2)
-    wH[:,BETA2COL,GAMMACOL]=rhodivunexp*r2sq-(r1r2/2)
-    wH[:,GAMMACOL,GAMMACOL]=deltasqm1div4delta*r1r2+\
-        (unexp-deltasqp1div2delta*r1sqplusr2sq)/4
-    # set weight=0 w.r.t. gamma twice when either y1 and/or y2 is missing
-    wH[~data.ybothnotnan,GAMMACOL,GAMMACOL]=0
-    # if only weights desired
-    if weightsonly:
-        # initialise log-likelihood per individual as zero
-        wL=np.zeros(data.nrow)
-        # add constant
-        wL[data.y1notnan]+=np.log(2*np.pi)
-        wL[data.y2notnan]+=np.log(2*np.pi)
-        # add log|V|
-        wL+=linpart[:,GAMMACOL]+2*(linpart[:,BETA1COL]+linpart[:,BETA2COL])
-        wL[data.ybothnotnan]+=2*np.log(2)
-        wL[data.ybothnotnan]-=2*(np.log(delta[data.ybothnotnan]+1))
-        # add quadratic term
-        wL+=(r1sqplusr2sq-2*rhor1r2)*invunexp
-        # turn to log-likelihood per individual
-        wL=-0.5*wL
-        # return weights
-        return wL,wG,wH
-    # calculate Hessian/n
-    H=CalculateHessian(data.x,wH,data.n)
-    # if we also need the individual-specific weights for gradient
-    if alsogradweights:
-        # return logL, gradient, Hessian, and those weights
-        return logL,grad,H,wG
-    # if we need OPG instead of grad
-    if Ginsteadofgrad:
-        # return logL, OPG, Hessian
-        return logL,GGT,H
-    # otherwise, return logL, gradient, Hessian
-    return logL,grad,H
+        # return logL, OPG, EVD -H, converged, iterations
+        return logL,GGT,D,P,converged,i
+
+    def BFGS(self,data,reestimation=False):
+        # set iteration counter to 0 and convergence to false
+        i=0
+        converged=False
+        # calculate logL, grad, Hessian using weights baseline model
+        (logL,grad,H)=self.CalcLogL(data,useexistingweights=True)
+        # get (bended) EVD of -Hessian
+        (Dadj,P,D)=BendEVDSymPSD(-H)
+        # initialise approximated inverse Hessian
+        AIH=-(P*(1/Dadj[None,:]))@P.T
+        # while not converged and MAXITER not reached
+        while not(converged) and i<MAXITER:
+            # if logL is -infinity: quit; on a dead track for this model
+            if np.isinf(logL):
+                if reestimation: return logL,converged
+                if onestep: return converged,i
+                return logL,None,[0],None,converged,i
+            # get BFGS update
+            update=(-AIH@grad.reshape((data.k*TOTALCOLS,1)))\
+                .reshape((data.k,TOTALCOLS))
+            # calculate convergence criterion
+            msg=(update*grad).mean()
+            # if converged: convergenced=True
+            if msg<TOL:
+                converged=True
+            else: # if not converged yet: get new parameters, logL, grad
+                # either via line search
+                if linesearch:
+                    (j,step,paramnew,logLnew,gradnew)=\
+                        self.GoldenSection(data,logL,grad,update,bfgs=True)
+                else: # or full update
+                    paramnew=data.param+update
+                    (logLnew,gradnew)=\
+                        self.CalcLogL(data,param=paramnew,logLgradonly=True)
+                # complete update if new log-likelihood is not -infinity
+                if not(np.isinf(logLnew)):
+                    # calculate quantities needed for BFGS
+                    s=(paramnew-data.param).reshape((data.k*TOTALCOLS,1))
+                    y=(gradnew-grad).reshape((data.k*TOTALCOLS,1))
+                    sty=(s*y).sum()
+                    r=1/sty
+                    v=s*r
+                    w=AIH@y
+                    # store new parameters, grad, logL
+                    data.param=paramnew
+                    grad=gradnew
+                    logL=logLnew
+                    # update approximated inverse Hessian and stabilise
+                    AIH=AIH-np.outer(v,w)-np.outer(w,v)+\
+                        np.outer(v,v)*((w*y).sum())+np.outer(v,s)
+                    AIH=(AIH+(AIH.T))/2
+                    # update iteration counter
+                    i+=1
+                else:
+                    # otherwise only set logL to -np.inf, causing BFGS to stop
+                    # because of condition at start of while loop
+                    logL=-np.inf
+        # if re-estimation for LRT (for subsample with nonmissing genotype)
+        if reestimation:
+            # return logL and whether converged
+            return logL,converged
+        # if 1-step efficient estimation (full convergence in small sample;
+        # doing inference based on final Newton step in full sample)
+        if onestep:
+            # return number of iterations and whether converged
+            return converged,i
+        # calculate logL, OPG, H at BFGS solution
+        (logL,GGT,H)=self.CalcLogL(data,Ginsteadofgrad=True)
+        # get (bended) EVD of unpacked -Hessian
+        (_,P,D)=BendEVDSymPSD(-H)
+        # return logL, OPG, EVD -H, converged, iterations
+        return logL,GGT,D,P,converged,i
+
+    def GoldenSection(self,data,logL,grad,update,bfgs=False):
+        # calculate update'grad
+        utg=(grad*update).sum()
+        # initialise parameters at various points along interval
+        param1=data.param
+        param2=data.param+ONEMINTHETAINV*update
+        param3=data.param+THETAINV*update
+        param4=data.param+update
+        # set corresponding step sizes
+        step1=0
+        step2=ONEMINTHETAINV
+        step3=THETAINV
+        step4=1
+        # set iteration counter to one and converged to false
+        j=1
+        converged=False
+        # calculate log likelihood at right
+        logL4=self.CalcLogL(data,param=param4,logLonly=True)
+        # directly try Armijo's rule before performing actual section search
+        if logL4>=logL+ARMIJO*step4*utg:
+            converged=True
+        else: # if not directly meeting criterion
+            # calculate log likelihoods mid-left and mid-right
+            logL2=self.CalcLogL(data,param=param2,logLonly=True)
+            logL3=self.CalcLogL(data,param=param3,logLonly=True)
+        # while not converged and MAXITER not reached
+        while not(converged) and j<MAXITER:
+            # update iteration counter
+            j+=1
+            #if mid-left val >= mid-right val: set mid-right as right
+            if logL2>=logL3: 
+                # set parameters accordingly
+                param4=param3
+                param3=param2
+                param2=THETAINV*param1+ONEMINTHETAINV*param4
+                # set step sizes accordingly
+                step4=step3
+                step3=step2
+                step2=THETAINV*step1+ONEMINTHETAINV*step4
+                # calculate log likelihood at new mid-left and mid-right
+                logL4=logL3
+                logL3=logL2
+                logL2=self.CalcLogL(data,param=param2,logLonly=True)
+                # test if Armijo's rule satisfied
+                if logL4>=logL+ARMIJO*step4*utg:
+                    converged=True
+            #if mid-right val > mid-left val: set mid-left as left
+            else:
+                # set parameters accordingly
+                param1=param2
+                param2=param3
+                param3=THETAINV*param4+ONEMINTHETAINV*param1
+                # set step sizes accordingly
+                step1=step2
+                step2=step3
+                step3=THETAINV*step4+ONEMINTHETAINV*step1
+                # calculate log likelihood at new mid-left and mid-right
+                logL2=logL3
+                logL3=self.CalcLogL(data,param=param3,logLonly=True)
+        # if we're doing BFGS
+        if bfgs:
+            # calculate gradient, and return relevant output for new estimates
+            grad4=self.CalcLogL(data,param=param4,gradonly=True)
+            return j,step4,param4,logL4,grad4
+        # otherwise: update params, and just return no. of steps and step size
+        data.param=param4
+        return j,step4
+
+    def CalcLogL(self,data,param=None,useexistingweights=False,\
+                    weightsonly=False,logLonly=False,logLgradonly=False,\
+                    Gonly=False,gradonly=False,alsogradweights=False,\
+                    Ginsteadofgrad=False):
+        # if we can use weights from previous calculation to get logL,grad,H
+        if useexistingweights:
+            # calculate log-likelihood/n and gradient/n using those weights
+            logL=(self.data.wL[data.mainind].sum())/data.n
+            grad=(data.x.T@(self.data.wG[data.mainind,:]))/data.n
+            # calculate Hessian/n using those weights
+            H=CalculateHessian(data.x,self.data.wH[data.mainind,:,:],data.n)
+            # return those components
+            return logL,grad,H
+        # if parameters not provided, use what's in data
+        if param is None:
+            param=data.param
+        # calculate linear parts
+        linpart=(data.x[:,:,None]*param[None,:,:]).sum(axis=1)
+        # set appropriate parts to zero for observations with missingness
+        linpart[~data.y1notnan,ALPHA1COL]=0
+        linpart[~data.y2notnan,ALPHA2COL]=0
+        linpart[~data.y1notnan,BETA1COL]=0
+        linpart[~data.y2notnan,BETA2COL]=0
+        linpart[~data.ybothnotnan,GAMMACOL]=0
+        # get sigma1, sigma2, delta, and rho
+        sig1=np.exp(linpart[:,BETA1COL])
+        sig2=np.exp(linpart[:,BETA2COL])
+        delta=np.exp(linpart[:,GAMMACOL])
+        rho=(delta-1)/(delta+1)
+        # set halting variable to false
+        halt=False
+        # if at least one st.dev is zero: halt=True
+        if (((sig1==0).sum())+((sig2==0).sum()))>0:
+            halt=True
+        # if at least one delta is 0 or np.inf: halt=True
+        if (((delta==0).sum())+(np.isinf(delta).sum()))>0:
+            halt=True
+        # if at least one rsq is 1: halt=True
+        if ((rho**2==1).sum())>0:
+            halt=True
+        # if halt=True: set -np.inf as log-likelihood, and stop
+        if halt:
+            logL=-np.inf
+            if logLonly: return logL
+            if logLgradonly: return logL,None
+            if gradonly or Gonly: return None
+            if weightsonly: return None,None,None
+            if alsogradweights: return logL,None,None,None
+            return logL,None,None
+        # set sig1 and sig2 to np.inf for missing observations
+        sig1[~data.y1notnan]=np.inf
+        sig2[~data.y2notnan]=np.inf
+        # calculate errors
+        e1=data.y1-linpart[:,ALPHA1COL]
+        e2=data.y2-linpart[:,ALPHA2COL]
+        # calculate rescaled errors (i.e. error/stdev)
+        r1=(e1/sig1)
+        r2=(e2/sig2)
+        # calculate some other key ingredients for logL/grad/H
+        rhosq=rho**2
+        unexp=1-rhosq
+        invunexp=1/unexp
+        r1sq=r1**2
+        r2sq=r2**2
+        r1r2=r1*r2
+        r1sqplusr2sq=r1sq+r2sq
+        rhor1r2=rho*r1r2
+        # calculate log-likelihood only if necessary
+        if logLonly or logLgradonly or \
+            (not(gradonly) and not(Gonly) and not(weightsonly)):
+            # calculate constant
+            cons=data.N*np.log(2*np.pi)
+            # calculate log|V| and quadratic term
+            logdetV=2*data.nboth*np.log(2)+linpart[:,GAMMACOL].sum()\
+                +2*(linpart[:,BETA1COL].sum()+linpart[:,BETA2COL].sum())\
+                    -2*((np.log(delta[data.ybothnotnan]+1)).sum())
+            quadratic=((r1sqplusr2sq-2*rhor1r2)*invunexp).sum()
+            # calculate and return logL/n
+            logL=-0.5*(cons+logdetV+quadratic)/data.n
+        # if only logL desired, return that
+        if logLonly:
+            return logL
+        # initialise weights matrix for gradient
+        wG=np.empty((data.nrow,TOTALCOLS))
+        # calculate key ingredients for grad/H
+        rhor1=rho*r1
+        rhor2=rho*r2
+        invsig1unexp=invunexp/sig1
+        invsig2unexp=invunexp/sig2
+        deltasqm1div4delta=((delta**2)-1)/(4*delta)
+        deltasqp1div2delta=((delta**2)+1)/(2*delta)
+        # calculate weights matrix for gradient
+        wG[:,ALPHA1COL]=(r1-rhor2)*invsig1unexp
+        wG[:,ALPHA2COL]=(r2-rhor1)*invsig2unexp
+        wG[:,BETA1COL]=((r1sq-rhor1r2)/unexp)-1
+        wG[:,BETA2COL]=((r2sq-rhor1r2)/unexp)-1
+        wG[:,GAMMACOL]=(rho-deltasqm1div4delta*r1sqplusr2sq+\
+                        deltasqp1div2delta*r1r2)/2
+        # set gradient=0 w.r.t. beta1 for missing y1
+        # and idem w.r.t. beta2 for missing y2
+        wG[~data.y1notnan,BETA1COL]=0
+        wG[~data.y2notnan,BETA2COL]=0
+        # calculate gradient only if necessary
+        if logLgradonly or gradonly or \
+            not(Gonly or Ginsteadofgrad or weightsonly):
+            grad=(data.x.T@wG)/data.n
+        # if only logL and grad desired, return that
+        if logLgradonly:
+            return logL,grad
+        # if only gradient desired, return that
+        if gradonly:
+            return grad
+        # calculate OPG only if necessary
+        if Gonly or Ginsteadofgrad:
+            # calculate OPG
+            GGT=CalculateOPG(data.x,wG,data.n)
+        # if only OPG wanted, return that
+        if Gonly:
+            return GGT
+        # calculate key ingredients for Hessian
+        rhodivunexp=rho*invunexp
+        rhosqplus1=1+rhosq
+        # initialise weights array Hessian (Nplink-by-TOTALCOLS-by-TOTALCOLS)
+        wH=np.empty((data.nrow,TOTALCOLS,TOTALCOLS))
+        # calculate weights array for Hessian
+        wH[:,ALPHA1COL,ALPHA1COL]=-invsig1unexp/sig1
+        wH[:,ALPHA2COL,ALPHA2COL]=-invsig2unexp/sig2
+        wH[:,ALPHA1COL,ALPHA2COL]=rho*invsig1unexp/sig2
+        wH[:,ALPHA1COL,BETA1COL]=invsig1unexp*(rhor2-2*r1)
+        wH[:,ALPHA2COL,BETA2COL]=invsig2unexp*(rhor1-2*r2)
+        wH[:,ALPHA1COL,BETA2COL]=invsig1unexp*(rhor2)
+        wH[:,ALPHA2COL,BETA1COL]=invsig2unexp*(rhor1)
+        wH[:,ALPHA1COL,GAMMACOL]=invsig1unexp*(rhor1-(rhosqplus1*(r2/2)))
+        wH[:,ALPHA2COL,GAMMACOL]=invsig2unexp*(rhor2-(rhosqplus1*(r1/2)))
+        wH[:,BETA1COL,BETA1COL]=invunexp*(rhor1r2-2*r1sq)
+        wH[:,BETA2COL,BETA2COL]=invunexp*(rhor1r2-2*r2sq)
+        wH[:,BETA1COL,BETA2COL]=invunexp*rhor1r2
+        wH[:,BETA1COL,GAMMACOL]=rhodivunexp*r1sq-(r1r2/2)
+        wH[:,BETA2COL,GAMMACOL]=rhodivunexp*r2sq-(r1r2/2)
+        wH[:,GAMMACOL,GAMMACOL]=deltasqm1div4delta*r1r2+\
+            (unexp-deltasqp1div2delta*r1sqplusr2sq)/4
+        # set weight=0 w.r.t. gamma twice when either y1 and/or y2 is missing
+        wH[~data.ybothnotnan,GAMMACOL,GAMMACOL]=0
+        # if only weights desired
+        if weightsonly:
+            # initialise log-likelihood per individual as zero
+            wL=np.zeros(data.nrow)
+            # add constant
+            wL[data.y1notnan]+=np.log(2*np.pi)
+            wL[data.y2notnan]+=np.log(2*np.pi)
+            # add log|V|
+            wL+=linpart[:,GAMMACOL]+2*(linpart[:,BETA1COL]+linpart[:,BETA2COL])
+            wL[data.ybothnotnan]+=2*np.log(2)
+            wL[data.ybothnotnan]-=2*(np.log(delta[data.ybothnotnan]+1))
+            # add quadratic term
+            wL+=(r1sqplusr2sq-2*rhor1r2)*invunexp
+            # turn to log-likelihood per individual
+            wL=-0.5*wL
+            # return weights
+            return wL,wG,wH
+        # calculate Hessian/n
+        H=CalculateHessian(data.x,wH,data.n)
+        # if we also need the individual-specific weights for gradient
+        if alsogradweights:
+            # return logL, gradient, Hessian, and those weights
+            return logL,grad,H,wG
+        # if we need OPG instead of grad
+        if Ginsteadofgrad:
+            # return logL, OPG, Hessian
+            return logL,GGT,H
+        # otherwise, return logL, gradient, Hessian
+        return logL,grad,H
 
 # define class for reading genotypes
 class GenoDataReader:
