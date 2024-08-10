@@ -1556,9 +1556,10 @@ def CalculateOPG(X,W,n):
     K=X.shape[1]
     GGT=np.empty((K,TOTALCOLS,K,TOTALCOLS))
     for i in range(TOTALCOLS):
+        XWi=(X*(W[:,None,i]/n))
         for j in range(i,TOTALCOLS):
             # calculate OPG for component i vs. j and j vs. i
-            GGT[:,i,:,j]=(X*(W[:,None,i]/n)).T@(X*(W[:,None,j]/n))
+            GGT[:,i,:,j]=XWi.T@(X*(W[:,None,j]/n))
             if j>i:
                 # use symmetry to find out counterparts
                 GGT[:,j,:,i]=GGT[:,i,:,j]
