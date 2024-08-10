@@ -278,17 +278,17 @@ class Data:
     def copysubset(self,keep=None):
         # if keep is not defined: keep all observations when copying
         if keep is None: keep=np.ones(self.nrow,dtype=np.bool_)
-        # make copy of main data, in form of Data instance
-        data=Data(self.x[keep,:].copy(),self.xlabels.copy(),\
-                  self.y1[keep].copy(),self.y1label,
-                  self.y2[keep].copy(),self.y2label,copy=True)
-        # also copy booleans and indices of remaining PLINK data and main data
-        data.y1notnan=self.y1notnan[keep].copy()
-        data.y2notnan=self.y2notnan[keep].copy()
-        data.ybothnotnan=self.ybothnotnan[keep].copy()
-        data.y1ory2notnan=self.y1ory2notnan[keep].copy()
-        data.ind=self.ind[keep].copy()
-        data.mainind=self.mainind[keep].copy()
+        # create new Data instance based on relevant data
+        data=Data(self.x[keep,:],self.xlabels,\
+                  self.y1[keep],self.y1label,
+                  self.y2[keep],self.y2label,copy=True)
+        # set booleans and indices of remaining PLINK data and main data
+        data.y1notnan=self.y1notnan[keep]
+        data.y2notnan=self.y2notnan[keep]
+        data.ybothnotnan=self.ybothnotnan[keep]
+        data.y1ory2notnan=self.y1ory2notnan[keep]
+        data.ind=self.ind[keep]
+        data.mainind=self.mainind[keep]
         # also copy parameter estimates
         data.param=self.param.copy()
         # update counts
@@ -324,16 +324,6 @@ class Data:
         # keep only subsample for which genotype is not missing
         self.Subsample(~gisnan)
     
-    def Clean(self):
-        # remove data that is not needed for reporting association results
-        self.wL=None
-        self.wG=None
-        self.wH=None
-        self.ind=None
-        self.mainind=None
-        self.y1=None
-        self.y2=None 
-
 class Analyser:
     '''
     Class for reading phenotypes and covariates, and for perfoming analyses
@@ -561,8 +551,6 @@ class Analyser:
                                                  silent=True,onestepfinal=True)
             # retrieve final parameter estimates from full data
             param1=data1.param
-            # remove extraneous stuff from data
-            data1.Clean()
         else: # else don't even try: just return nan/none values
             (param1,logL1,GGT1,D1,P1,converged1,i1)=\
                 (None,None,None,[0],None,False,None)
